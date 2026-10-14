@@ -1,0 +1,8 @@
+# Template for a copyrighted series. Copy to library/series/<id>.toml (gitignored).
+# Copyrighted text may only go to self-hosted, open-weight models (DECISIONS.md §2):
+# the code refuses any provider that is not self-hosted on a local/private address.
+id = "harry-potter"
+title = "Harry Potter"
+rights = "copyrighted"
+allowed_providers = ["vllm-local"]
+# self_hosted_hosts = ["my-pod.tailnet.ts.net"]   # optional, for a private tunnel

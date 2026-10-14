@@ -1,6 +1,6 @@
 import pytest
-
 from epub_factory import build_epub, omnibus, para
+
 from tome.epub.parse import Layout, parse_epub
 from tome.epub.passages import MAX_WORDS, split_passages
 from tome.text import word_count
