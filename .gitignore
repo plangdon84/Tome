@@ -10,3 +10,8 @@ __pycache__/
 *.pyc
 .venv/
 .env
+
+# Downloaded public-domain corpus (re-fetch with `tome corpus fetch`)
+corpus/
+# Model caches, usage logs
+.cache/

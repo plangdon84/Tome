@@ -1,0 +1,49 @@
+[project]
+name = "tome"
+version = "0.0.1"
+description = "Spoiler-safe reading companion: an LLM compiles each series into a SQLite pack at ingestion; questions are answered from the pack alone."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12",
+    "httpx>=0.27",
+    "lxml>=5.2",
+    "jsonschema>=4.22",
+    "numpy>=1.26",
+    "onnxruntime>=1.18",
+    "tokenizers>=0.19",
+    "huggingface-hub>=0.23",
+]
+
+[project.scripts]
+tome = "tome.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["tome"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003", "SIM905"]  # curly quotes and dashes are normal in book text
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = [
+    "live: calls a real LLM API and costs money (run with --run-live)",
+    "model: downloads/runs the real embedding model (run with --run-model)",
+    "corpus: needs a downloaded public-domain EPUB in corpus/ (run with --run-corpus)",
+]
