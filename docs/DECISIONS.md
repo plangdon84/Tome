@@ -188,3 +188,107 @@ These are the methods, in the order they'll be built:
   can't run away.
 - Optionally, an API key with a spending cap for public-domain development.
 - **Git.**
+
+### 9. What counts as known: stated, not inferred (decided 2026-10-14)
+
+**By default, an answer shows only what the text has shown to be true by the
+reader's horizon.** An LLM's inference can be wrong, and when it is right it
+is often a soft spoiler. (For example, at the end of *Monte Cristo* ch 30 a
+reader can guess that "Sinbad the Sailor" is Dantès, but the text hasn't said
+so.)
+
+In practice:
+- **Identity reveals are stated.** An alias or identity link (Busoni → the
+  Count, Scabbers → Pettigrew) is established only at the passage where the
+  text says so, and it must carry a verbatim quote from that passage. The pack
+  enforces this with a trigger, the same way it enforces quote-or-drop for
+  observations. The compiler may not merge two characters because it "must
+  be" the same person.
+- **Observation statuses:**
+  - `stated`: shown as fact.
+  - `claimed`: shown, attributed to whoever claims it ("the Count claims ...").
+  - `inferred`: hidden by default. Shown only when the question asks for
+    speculation ("Who might the priest be?", "any theories ...?"), and then
+    labelled as unconfirmed.
+- **Profiles, summaries and anticipated answers** are written from stated
+  facts only. The Phase 2 support check flags sentences that rely on
+  inference.
+- **Spoiler evals** treat an unstated identity as a leak (case
+  `mc-s11-sinbad-not-stated-dantes`).
+
+### 10. What is visible before the horizon (decided 2026-10-14)
+
+- Book titles and reading order are always visible. You pick a book before
+  any horizon exists.
+- A chapter's title becomes visible once that chapter has started, since the
+  reader sees it at the top of the page.
+- Everything else (passage text, all derived data) needs `pos ≤ horizon`.
+
+### 11. The multi-book public-domain series is Oz (decided 2026-10-14)
+
+L. Frank Baum's first five Oz books, from Standard Ebooks
+(`uv run tome corpus fetch oz`). Chosen over Barsoom because:
+- it has a clean, stated identity reveal across a book boundary (book 2,
+  ch 23: the boy Tip is Princess Ozma);
+- characters carry over from book to book;
+- the books are short (about 40k words each), so full compiles are cheap.
+
+### 12. Model hosting and the model-size comparison (decided 2026-10-14)
+
+**Open-weight models only.** Copyrighted books run on rented hardware
+(DECISIONS.md §2). Public-domain books may use the same open-weight models
+through OpenRouter, which is much cheaper than renting a GPU and gives
+directly comparable results.
+
+**Hosting recommendation: AWS EC2, one instance type for both model
+sizes.**
+- **Instance:** `g6e.xlarge` (one NVIDIA L40S, 48 GB), roughly $1.9/hr
+  on-demand in us-east-1, less on spot. Check current prices.
+  - It runs an 8–14B model in 16-bit with room to spare.
+  - It runs a ~70B model at 4-bit (AWQ/GPTQ, ~40 GB of weights), with a
+    small KV cache. Chapter-length prompts at low concurrency should fit.
+  - If 70B proves too tight, use a ~30B-class model as the "large" tier
+    rather than paying for a multi-GPU instance.
+- **Setup:** the Deep Learning AMI plus vLLM, with the pod workflow from §2
+  (run against localhost, download the pack, terminate the instance and
+  delete its volume). Set an auto-stop timer.
+- **Action for you before Phase 1 needs it:** new AWS accounts usually have
+  a **zero quota for GPU instances**. Request an increase of the "Running
+  On-Demand G and VT instances" vCPU quota to at least 8 in your chosen
+  region (and the spot equivalent, if you plan to use spot). Approval can
+  take a day or more.
+- RunPod or Vast.ai remain fallbacks: per-second billing, no quota process.
+
+**Chapter sample for the 8–14B vs ~70B comparison: 12 chapters, as three
+windows of 4 consecutive chapters,** run in two stages.
+
+1. **Stage A: public domain, automated, about $0.10.** Run both sizes through
+   OpenRouter on all of Oz book 2 and on Monte Cristo ch 23–34 (the persona
+   chapters). Score them mechanically:
+   - quote-check pass rate;
+   - spoiler and coverage evals;
+   - a support check, where a larger judge model flags summary sentences
+     that their inputs don't support.
+
+   This finds the obvious failures for almost nothing.
+2. **Stage B: your judgement, on the pod, on books you know.** Twelve
+   chapters per model, so 24 summaries to read (about an hour):
+   - *HP3 ch 7–10:* the Scabbers leak hotspot, where the model's own memory
+     is most tempting;
+   - *HP6 ch 9–12:* the Half-Blood Prince book, early;
+   - *Cradle 1 ch 1–4:* the realistic case, which models know less well.
+
+   Mark each summary for:
+   - any factual error;
+   - anything not yet in the text (a spoiler, including inferences);
+   - usefulness, from 1 to 3.
+
+Why windows of 4: summaries are rolling, so a single isolated chapter never
+tests the carry-over from earlier summaries. Why 12: it is about the most
+one person can judge carefully in a sitting, and three windows cover easy,
+leak-prone and obscure material. Twelve chapters is a go/no-go check, not a
+statistical comparison. Stage A's full-book automated scores carry the
+volume.
+
+**Decision rule:** keep the smaller model unless it has any spoiler, or at
+least 2 more factual errors than the larger one, in Stage B.

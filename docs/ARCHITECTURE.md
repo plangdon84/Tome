@@ -53,6 +53,7 @@ Every row carries `pos` / `max_source_pos` and `run_id`.
 | **Passages** | The source text, split into chunks of about 150–400 words, each with a `pos`. Includes FTS5 and embeddings. | Evidence display, "where have I seen this?", fallback search |
 | **Mentions + alias links** | Each surface form → entity. Each alias link has `established_at`. | Resolving names in the question. Identity reveals stay hidden. |
 | **Observations** | Short, **natural-language** atomic statements written by the LLM, plus structured fields: `(subject, predicate, object, status, evidence_passage, quote_span, pos)`. Example: *"Ron says Scabbers has been in his family for twelve years."* (claimed_by: Ron). | Assembling answers. Each observation is a ready-to-show sentence. |
+| **Identity reveals** | "X is Y" links, only where the text **states** it, with a verbatim quote from the reveal passage (see DECISIONS.md §9). | Resolving names once a reveal has happened. |
 | **Entity profiles at checkpoints** | A short "what you know about X so far". Regenerated only at chapters where X gets new observations. Built from the previous profile plus new observations, so it is incremental and safe by construction. | "Who is X?" |
 | **Relationships** | Typed edges (free-text type) between entities, each with a `pos`. | "How are X and Y connected?" |
 | **Chapter summaries** | One per chapter, built in rolling order, plus book recaps. Also "story so far" rollups at checkpoints. | "Recap", "what happened last book?" |
@@ -62,6 +63,9 @@ Every row carries `pos` / `max_source_pos` and `run_id`.
 
 ### Auditing ingestion (where spoiler risk now lives)
 
+- **Stated, not inferred (DECISIONS.md §9):** default answers use `stated`
+  and attributed `claimed` facts only. `inferred` observations appear only for
+  speculative questions, and identity reveals must be stated and quoted.
 - **Quote check (mechanical):** every observation must include a verbatim quote
   span. The span must exist in its evidence passage, and the passage `pos` must
   equal the observation `pos`. Observations that fail are dropped. This
