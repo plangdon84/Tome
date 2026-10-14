@@ -57,6 +57,7 @@ class PackWriter:
             if not overwrite:
                 raise FileExistsError(self.path)
             self.path.unlink()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn: sqlite3.Connection = connect_rw(self.path, "pack")
         self.pack_id = pack_id
         self.series_title = series_title
