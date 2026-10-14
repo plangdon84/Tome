@@ -7,7 +7,7 @@ structure only where it measurably helps.**
 Each phase ends with a decision gate: continue, change course, or stop.
 
 > **The concrete choices for your setup are in [DECISIONS.md](DECISIONS.md).**
-> In short: a cloud API for the LLM (start with the cheapest tier that passes
+> In short: an open-weight LLM on a rented GPU for your books (the smallest model that passes
 > the evals), everything else local on an Intel Mac, SQLite, *Harry Potter* as
 > the worst case for spoiler leaks, *Cradle* as the realistic usefulness test,
 > and position capture via chapter picker plus the iOS share sheet.
@@ -36,9 +36,14 @@ Each phase ends with a decision gate: continue, change course, or stop.
 Build the measuring stick before building anything else.
 
 - [ ] Repo skeleton: Python project (uv or poetry), lint/format, pytest.
-- [ ] Provider abstraction: one `LLMClient` interface (Anthropic adapter first;
-  a local/OpenAI-compatible adapter later) and one `Embedder` interface.
-  Track token usage and cost on every call, and enforce a spending cap.
+- [ ] Provider abstraction: one `LLMClient` interface (an OpenAI-compatible
+  adapter for vLLM, llama.cpp, or Ollama first; an Anthropic adapter for
+  public-domain development) and one `Embedder` interface.
+  - Each series has an allowed-provider list, so copyrighted books can only
+    go to self-hosted models.
+  - Track tokens on every call.
+- [ ] GPU pod runner script: upload, start vLLM, ingest, download the SQLite
+  file, destroy the pod.
 - [ ] Download the public-domain corpus: *The Count of Monte Cristo* plus one
   multi-book series (Barsoom or Oz).
 - [ ] **Spoiler eval set**, written by hand, about 40–60 cases:
@@ -74,8 +79,9 @@ Build the measuring stick before building anything else.
   `tome recap --series X --at "b2 ch1"`.
 - [ ] Ingestion is resumable and checkpointed per chapter, and logs token
   counts and cost.
-- [ ] Compare model tiers on a sample of about 3 chapters first. Run the full
-  corpus only on the cheapest tier that passes the evals.
+- [ ] Compare open-model sizes (about 8–14B vs about 70B) on a sample of about
+  3 chapters first. Run the full corpus only on the smallest model that passes
+  the evals.
 
 **Gate:** leak rate is 0 on the hard check and near 0 on the soft check.
 Answers are useful enough that you reach for them while reading. Record the

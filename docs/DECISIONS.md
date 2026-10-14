@@ -11,7 +11,7 @@ It overrides the generic options in [REVIEW.md](REVIEW.md) and
 | Dev machine | MacBook Air (2020), Intel Core i3 1.1 GHz (2 cores), 8 GB RAM, Intel integrated graphics, macOS Ventura 13.6 |
 | Books for the POC | *Harry Potter* 1–7 (one omnibus EPUB), *Cradle* 1–12 (DRM-free EPUBs) |
 | Reading apps | Kindle app (mostly) and Apple Books, on a phone |
-| Cloud model | Acceptable if it doesn't train on or keep your data. Prove the concept cheaply first. |
+| Cloud model | Self-hosted open-weight model on a rented GPU for copyrighted books (no AI-company APIs). Prove the concept cheaply first. |
 | Storage | SQLite |
 
 ## What follows from that
@@ -23,27 +23,54 @@ even a 3B model at only a few tokens per second. Processing one series would
 take days, and the quality would be too low to judge the concept fairly.
 
 **Decision:**
-- **Language model:** a cloud API.
+- **Language model:** an open-weight model on a rented cloud GPU (see §2).
 - **Local:** everything else. That covers EPUB parsing, SQLite, full-text
   search, and (later) embeddings with a small model like `bge-small` or
   `all-MiniLM`, which take minutes on a CPU.
 - **Later:** the provider layer stays swappable, so a local model can be added
   if you get Apple Silicon hardware.
 
-### 2. Cloud provider and data handling
+### 2. Where the model runs: a self-hosted open model for your books
 
-- **Default choice:** the Anthropic API.
-  - Commercial API terms say inputs and outputs are not used for training by
-    default.
-  - API logs are deleted after a limited period. Sources disagree on whether
-    that is 7 or 30 days, so check the current Commercial Terms and Data
-    Processing Addendum.
-  - True **zero data retention** needs an enterprise agreement. "Not trained
-    on, deleted after a short window" is what's realistic for a personal
-    project. Describe it that way to authors as well.
-- **Avoid free tiers of any provider.** Several free tiers do train on your
-  inputs.
-- **The provider layer stays swappable**, so this choice isn't permanent.
+**Rule:** copyrighted books are processed only by an **open-weight model
+running on a GPU you rent**. No AI company's API ever receives their text.
+
+**How it works:** take a "pod" approach, so no endpoint is ever exposed.
+
+1. Rent a GPU pod by the hour from a GPU cloud (RunPod, Vast.ai, Lambda,
+   Modal, or a hyperscaler's spot GPUs).
+2. Upload the EPUBs and the Tome code to the pod.
+3. Run **vLLM** (or llama.cpp or Ollama) on the pod itself, serving an
+   open-weight model.
+4. Run the ingestion pipeline against `localhost` on the pod.
+5. Download the resulting SQLite database to your Mac.
+6. **Destroy the pod and its disk.**
+
+**What this does and doesn't protect:**
+- The text never reaches a company that trains models.
+- You still trust the GPU host, the way you trust any cloud provider with a
+  disk. They have no model-training business and normal cloud terms apply.
+- You control deletion completely.
+- The pitch to authors is stronger: "processed on private rented hardware
+  with an open model, deleted afterwards."
+
+**Model choice:**
+- Test a small class (about 8–14B, which fits a 24 GB card) against a large
+  class (about 70B quantized, which needs 48–80 GB) on the eval sample.
+- Use the smallest one that passes.
+- Pick specific models when we get there. The open-weight landscape changes
+  every few months.
+
+**Public-domain development books can use any provider**, including a cheap
+API. There's no copyright or consent issue, and it makes iterating faster.
+The code tags each series with an allowed-provider list, so a copyrighted
+series *cannot* be sent to a non-self-hosted provider by accident.
+
+**Provider layer:**
+- **Primary adapter:** OpenAI-compatible chat. vLLM, llama.cpp, and Ollama
+  all speak it.
+- **Secondary adapter:** an Anthropic adapter, kept for public-domain
+  development and comparison.
 
 ### 3. Cost estimate for the POC
 
@@ -51,32 +78,54 @@ The corpus is about **3.2M tokens** in total:
 - *Harry Potter*: about 1.08M words, about 1.45M tokens.
 - *Cradle*: about 1.3M words, about 1.75M tokens.
 
-Listed API prices per million tokens (cached 2026-10-06; check before
-spending):
+Workload estimates:
+- **Summaries:** about 5M tokens in and 0.45M out.
+- **Extraction:** about 10M tokens in and 1.5M out.
 
-| Model | Input $/MTok | Output $/MTok |
+Rough GPU rental prices (check current prices; marketplace prices vary):
+
+| GPU | Typical $/hr | Fits |
 |---|---|---|
-| Haiku 5.5 | 0.10 | 0.50 |
-| Sonnet 5.5 | 2.00 | 10.00 |
-| Opus 5.5 | 4.00 | 20.00 |
+| RTX 4090 / L4-class (24 GB) | ~$0.30–0.80 | 8–14B models |
+| A100 80GB | ~$1–2 | ~70B at 4-bit |
+| H100 80GB | ~$2–3 | ~70B at 4-bit, faster |
 
-The Batch API halves these prices for jobs that aren't time-sensitive.
+vLLM processes many requests at once. Chapter summaries chain within a book,
+but 19 books can run in parallel, and extraction calls are independent of
+each other. A rough throughput estimate:
+- **8B model:** both series' summaries take well under an hour, and
+  extraction takes 1–2 hours.
+- **70B model:** expect a few hours for everything.
 
-Estimated one-time processing cost for both series:
+**Expected spend:**
+- About **$5–20 per full run** of both series.
+- Add a few dollars for the model comparison runs.
+- About **$1–5** of API use for public-domain development.
+- A **POC total under $50** still holds.
 
-| Pass | Approx. tokens | Haiku 5.5 | Sonnet 5.5 | Opus 5.5 |
-|---|---|---|---|---|
-| Phase 1: chapter summaries (≈550 chapters) | ~5M in / ~0.45M out | **≈ $1** | ≈ $15 | ≈ $30 |
-| Phase 2: entity/observation extraction | ~10M in / ~1.5M out | **≈ $2** | ≈ $35 | ≈ $70 |
-| Per question asked | ~5–10k in / ~0.5k out | < $0.01 | ≈ $0.02 | ≈ $0.04 |
+**Cost-control rules:**
+- Always use auto-shutdown or a time limit on pods. An idle GPU left running
+  is the main way to waste money.
+- Prefer providers with per-second billing.
 
-**Plan:**
-1. Run every pass on a **sample** (about 3 chapters) with all three tiers.
-2. Score the results on the eval set.
-3. Run the full corpus only on the cheapest tier that passes.
+### 3a. Answering questions while you read
 
-**Expected total POC spend: under $50**, probably much less. You don't need
-any cloud infrastructure: the code runs on your Mac and calls the API.
+Ingestion is a batch job. Questions arrive one at a time while you read, and
+keeping a GPU running all day to answer them is wasteful. Options:
+
+| Option | Privacy | Cost | Experience |
+|---|---|---|---|
+| **Serverless GPU** (RunPod Serverless, Modal) running the same open model, scaling to zero | Same as ingestion: rented hardware, no AI company | Pay per second of use, so cents per reading session | Cold start of roughly 30s to a few minutes on the first question, then fast |
+| Pod started at the beginning of a reading session | Same | ~$0.30–0.80/hr while it's up | Fast, but you have to remember to stop it |
+| Small model (~3B) on your Mac | Fully local | Free | Slow (about a minute per answer) and weaker answers |
+| Precomputed answers only (recaps, entity profiles at each chapter) | Fully local at read time | Free at read time | Instant, but no free-form questions |
+
+**Recommendation:**
+- **Precompute** recaps and entity profiles at chapter checkpoints during
+  ingestion. That covers "recap" and most of "who is X" with **no** model
+  needed at read time.
+- Use **serverless GPU** for free-form questions.
+- Accept the cold-start delay for the POC.
 
 ### 4. How the two series work as test sets
 
@@ -137,14 +186,16 @@ These are the methods, in the order they'll be built:
 - Code is written and tested here (in Claude Code sessions) against
   **public-domain books**. No copyrighted text ever enters the repo or this
   cloud session.
-- You `git pull` on your Mac, put your EPUBs in `library/`, set
-  `ANTHROPIC_API_KEY`, and run the pipeline on your own books.
+- You `git pull` on your Mac and put your EPUBs in `library/`.
+- A helper script uploads them and the code to a rented GPU pod, runs
+  ingestion there, downloads the SQLite file, and destroys the pod.
 - You report results and failures back. Failures become new eval cases.
 
 ### 8. Mac prerequisites (for when Phase 1 is ready)
 
 - **Python 3.12+:** install with [uv](https://docs.astral.sh/uv/) (easiest)
   or Homebrew. Both work on Intel Macs running Ventura.
-- **An Anthropic API key with a spending limit.** Set a monthly cap of about
-  $20–50 in the Console.
+- **A GPU cloud account with a prepaid balance.** About $20–50, so cost
+  can't run away.
+- Optionally, an API key with a spending cap for public-domain development.
 - **Git.**
