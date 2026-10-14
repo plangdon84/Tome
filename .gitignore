@@ -1,0 +1,12 @@
+# Personal book library and derived data: never commit
+library/
+data/
+*.epub
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
