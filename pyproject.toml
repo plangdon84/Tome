@@ -10,7 +10,9 @@ dependencies = [
     "lxml>=5.2",
     "jsonschema>=4.22",
     "numpy>=1.26",
-    "onnxruntime>=1.18",
+    # 1.23.2 is the last onnxruntime with Intel-macOS wheels (cp310-cp313 only).
+    "onnxruntime>=1.18,<1.24; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "onnxruntime>=1.18; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     "tokenizers>=0.19",
     "huggingface-hub>=0.23",
 ]

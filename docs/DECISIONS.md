@@ -182,8 +182,11 @@ These are the methods, in the order they'll be built:
 
 ### 8. Mac prerequisites (for when Phase 1 is ready)
 
-- **Python 3.12+:** install with [uv](https://docs.astral.sh/uv/) (easiest)
-  or Homebrew. Both work on Intel Macs running Ventura.
+- **Python 3.12:** install with [uv](https://docs.astral.sh/uv/); Homebrew
+  isn't needed. On an Intel Mac use 3.12 (or 3.13), not 3.14+: onnxruntime
+  stopped shipping Intel-macOS builds after 1.23.2, which has no 3.14 wheel,
+  so `pyproject.toml` pins `onnxruntime<1.24` on that platform only.
+  Step-by-step: [MAC_SETUP.md](MAC_SETUP.md).
 - **A GPU cloud account with a prepaid balance.** About $20–50, so cost
   can't run away.
 - Optionally, an API key with a spending cap for public-domain development.

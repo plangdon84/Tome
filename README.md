@@ -14,6 +14,7 @@ Status: Phase 0 (foundations and eval harness) complete; see [`docs/PLAN.md`](do
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the LLM compiles the books at ingestion, and questions are answered on-device from the database.
 - [`docs/DECISIONS.md`](docs/DECISIONS.md): setup-specific decisions covering hardware, model and cost, test series, and position capture.
 - [`docs/AUTHOR_OUTREACH.md`](docs/AUTHOR_OUTREACH.md): a guide for conversations with indie authors.
+- [`docs/MAC_SETUP.md`](docs/MAC_SETUP.md): step-by-step setup of the `tome` CLI on the Intel MacBook Air, and checking how the omnibus EPUB splits.
 
 ## Ground rules
 
@@ -22,7 +23,8 @@ Status: Phase 0 (foundations and eval harness) complete; see [`docs/PLAN.md`](do
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+.
+Requires [uv](https://docs.astral.sh/uv/) and Python 3.12+ (on an Intel Mac, exactly
+3.12 or 3.13: see [`docs/MAC_SETUP.md`](docs/MAC_SETUP.md)).
 
 ```sh
 uv sync                                  # create .venv with all dependencies

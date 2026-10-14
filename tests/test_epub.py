@@ -51,6 +51,15 @@ def test_layout_sidecar_file_is_picked_up(tmp_path):
     assert [len(b.chapters) for b in r.books] == [1, 1]
 
 
+def test_excluding_a_book_group_drops_its_chapters(tmp_path):
+    path = omnibus(tmp_path / "o.epub")
+    full = parse_epub(path, Layout(split="toc"))
+    r = parse_epub(path, Layout(split="toc", exclude=["^Book Two$"]))
+    assert [(b.title, len(b.chapters)) for b in r.books] == [("Book One", 2)]
+    # Book One still ends where Book Two starts.
+    assert r.books[0].chapters == full.books[0].chapters
+
+
 def test_bad_layout(tmp_path):
     (tmp_path / "x.toml").write_text('split = "magic"\n')
     with pytest.raises(ValueError):
