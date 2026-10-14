@@ -1,0 +1,5 @@
+# Public domain: any listed provider may process it.
+id = "oz"
+title = "Oz"
+rights = "public_domain"
+allowed_providers = ["openrouter", "vllm-local", "llamacpp-local", "ollama-local"]

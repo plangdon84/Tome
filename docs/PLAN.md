@@ -62,10 +62,11 @@ Build the measuring stick before building anything else.
   - Track tokens on every call.
 - [x] Embedding abstraction pinned to one small model that can also run in a
   browser. *(Xenova/bge-small-en-v1.5, quantized ONNX at a pinned revision.)*
-- [ ] Public-domain corpus: *The Count of Monte Cristo* plus one multi-book
-  series (Barsoom or Oz). *Monte Cristo done (Standard Ebooks, with Project
-  Gutenberg as fallback; the Gutenberg edition's five nested volumes also
-  serve as an omnibus-split fixture). The multi-book series is still to do.*
+- [x] Public-domain corpus: *The Count of Monte Cristo* plus one multi-book
+  series (Barsoom or Oz). *Monte Cristo (Standard Ebooks, Gutenberg
+  fallback) and Oz books 1–5 (DECISIONS.md §11). The Gutenberg Monte Cristo,
+  whose five volumes are nested in its table of contents, doubles as an
+  omnibus-split fixture. Public eval sets for both.*
 - [x] **Eval sets:**
   - **Spoiler cases:** `{horizon, question, must_not_include[]}`, run
     against what the app would show.
@@ -109,7 +110,9 @@ this?" questions.
 - [ ] GPU pod runner script: upload, start vLLM, ingest, download the SQLite
   file, destroy the pod.
 - [ ] Compare open-model sizes (about 8–14B vs about 70B) for summary quality
-  on about 3 chapters.
+  on 12 chapters (three windows of 4 consecutive chapters), in two stages:
+  automated on public domain via OpenRouter, then judged by you on
+  HP/Cradle on the pod. See DECISIONS.md §12.
 
 **Gate:** recaps are accurate and spoiler-free. Search returns the right
 passages for "where have I seen X?"

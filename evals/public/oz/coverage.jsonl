@@ -1,0 +1,3 @@
+{"id": "oz-c01-tip-is-ozma", "series": "oz", "horizon": "b2 ch23", "question": "Who is Tip?", "expected_facts": ["Ozma"]}
+{"id": "oz-c02-wizard-humbug", "series": "oz", "horizon": "b1 ch15", "question": "Who is the Wizard of Oz?", "expected_facts": ["humbug"]}
+{"id": "oz-c03-dorothy-home", "series": "oz", "horizon": "b1 ch2", "question": "Where is Dorothy from?", "expected_facts": ["Kansas"]}

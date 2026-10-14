@@ -51,6 +51,33 @@ CATALOG: dict[str, CorpusBook] = {
 }
 
 
+def _se(author: str, slug: str) -> str:
+    return f"{SE}/{author}/{slug}/downloads/{author}_{slug}.epub?source=download"
+
+
+# Oz: the multi-book public-domain series. Book 2 has a clean identity reveal
+# (Tip is Ozma), and characters carry over between books.
+OZ = [
+    ("oz-1", "the-wonderful-wizard-of-oz", "The Wonderful Wizard of Oz"),
+    ("oz-2", "the-marvelous-land-of-oz", "The Marvelous Land of Oz"),
+    ("oz-3", "ozma-of-oz", "Ozma of Oz"),
+    ("oz-4", "dorothy-and-the-wizard-in-oz", "Dorothy and the Wizard in Oz"),
+    ("oz-5", "the-road-to-oz", "The Road to Oz"),
+]
+CATALOG.update(
+    {
+        key: CorpusBook(key, f"{title} (Baum)", (_se("l-frank-baum", slug),))
+        for key, slug, title in OZ
+    }
+)
+# Series keys expand to their books, in reading order.
+SERIES: dict[str, list[str]] = {"oz": [key for key, _, _ in OZ]}
+
+
+def expand(keys: list[str]) -> list[str]:
+    return [k for key in keys for k in SERIES.get(key, [key])]
+
+
 def fetch(
     key: str,
     dest_dir: Path = DEFAULT_DIR,

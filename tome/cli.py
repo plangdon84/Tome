@@ -32,9 +32,9 @@ def corpus_fetch(
     force: bool = typer.Option(False, help="Re-download even if present."),
 ):
     """Download public-domain EPUBs into corpus/ (gitignored)."""
-    from tome.corpus import CATALOG, fetch
+    from tome.corpus import CATALOG, expand, fetch
 
-    for key in keys or list(CATALOG):
+    for key in expand(keys or list(CATALOG)):
         if key not in CATALOG:
             raise typer.BadParameter(f"unknown key {key!r}; known: {sorted(CATALOG)}")
         typer.echo(f"{key}: {fetch(key, dest, force=force)}")
@@ -43,10 +43,12 @@ def corpus_fetch(
 @corpus_app.command("list")
 def corpus_list():
     """List the public-domain catalog."""
-    from tome.corpus import CATALOG
+    from tome.corpus import CATALOG, SERIES
 
     for book in CATALOG.values():
         typer.echo(f"{book.key:28} {book.title}")
+    for name, keys in SERIES.items():
+        typer.echo(f"{name:28} series: {' '.join(keys)}")
 
 
 # ------------------------------------------------------------------- parse --

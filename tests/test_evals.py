@@ -103,21 +103,48 @@ def test_phrase_matching():
 
 # --- Validate the public cases against the real text -------------------------------------
 
+SERIES_EPUBS = {
+    "monte-cristo": ["monte-cristo.epub"],
+    "oz": [f"oz-{n}.epub" for n in range(1, 6)],
+}
+
 
 @pytest.fixture(scope="module")
-def real_passages(monte_cristo_epub):
-    book = parse_epub(monte_cristo_epub, Layout()).books[0]
-    return [(n, p) for n, ch in enumerate(book.chapters, start=1) for p in ch.passages]
+def real_passages(corpus_dir):
+    """series -> [((book, chapter), passage text)] parsed from the real EPUBs."""
+    out = {}
+    for series, files in SERIES_EPUBS.items():
+        paths = [corpus_dir / f for f in files]
+        if not all(p.exists() for p in paths):
+            continue
+        rows = []
+        for b, path in enumerate(paths, start=1):
+            book = parse_epub(path, Layout()).books[0]
+            rows += [
+                ((b, n), p) for n, ch in enumerate(book.chapters, start=1) for p in ch.passages
+            ]
+        out[series] = rows
+    if not out:
+        pytest.skip("run: uv run tome corpus fetch")
+    return out
+
+
+def _public_cases(real_passages):
+    for case in load_cases(PUBLIC.parent):
+        if case.series in real_passages:
+            yield case, real_passages[case.series], (case.anchor.book, case.anchor.chapter)
 
 
 @pytest.mark.corpus
 def test_public_spoiler_phrases_do_not_occur_before_the_horizon(real_passages):
     """Each must-not phrase must be unknowable at the horizon (alongside the subject)."""
-    for case in load_cases(PUBLIC):
+    checked = 0
+    for case, passages, horizon in _public_cases(real_passages):
         if case.kind != "spoiler":
             continue
-        before = [p for n, p in real_passages if n <= case.anchor.chapter]
-        after = [p for n, p in real_passages if n > case.anchor.chapter]
+        checked += 1
+        before = [p for at, p in passages if at <= horizon]
+        after = [p for at, p in passages if at > horizon]
         if case.subject_terms:
             before = [p for p in before if any(contains_phrase(p, t) for t in case.subject_terms)]
         for phrase in case.phrases:
@@ -125,13 +152,14 @@ def test_public_spoiler_phrases_do_not_occur_before_the_horizon(real_passages):
             assert not early, f"{case.id}: {phrase!r} already appears before the horizon: {early}"
         # Paraphrase lists are fine, but at least one phrase must be a real later fact.
         assert any(contains_phrase(p, ph) for ph in case.phrases for p in after), case.id
+    assert checked
 
 
 @pytest.mark.corpus
 def test_public_coverage_facts_are_knowable_at_the_horizon(real_passages):
-    for case in load_cases(PUBLIC):
+    for case, passages, horizon in _public_cases(real_passages):
         if case.kind != "coverage":
             continue
-        before = [p for n, p in real_passages if n <= case.anchor.chapter]
+        before = [p for at, p in passages if at <= horizon]
         for fact in case.phrases:
             assert any(contains_phrase(p, fact) for p in before), f"{case.id}: {fact!r}"
