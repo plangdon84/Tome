@@ -11,6 +11,7 @@ Status: exploration / planning.
 - [`docs/original-direction.md`](docs/original-direction.md): the initial product direction.
 - [`docs/REVIEW.md`](docs/REVIEW.md): a critical review covering spoiler-model gaps, competitors, compute, reading position, and legal/ethics.
 - [`docs/PLAN.md`](docs/PLAN.md): the phased build plan with decision gates.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md): the LLM compiles the books at ingestion, and questions are answered on-device from the database.
 - [`docs/DECISIONS.md`](docs/DECISIONS.md): setup-specific decisions covering hardware, model and cost, test series, and position capture.
 - [`docs/AUTHOR_OUTREACH.md`](docs/AUTHOR_OUTREACH.md): a guide for conversations with indie authors.
 

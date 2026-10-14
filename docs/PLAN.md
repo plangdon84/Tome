@@ -19,14 +19,17 @@ Each phase ends with a decision gate: continue, change course, or stop.
 1. **One position axis.** Every passage has a monotonic integer `pos` across
    the series. The reader's horizon is a `pos`.
 2. **`max_source_pos` on every derived artifact.** An artifact is visible only
-   if `max_source_pos ≤ horizon`.
+   if `max_source_pos ≤ horizon`. This is enforced in one data-access layer.
 3. **Process in reading order.** Any step that builds up knowledge
    (summaries, alias resolution, entity profiles) sees only text up to the
    point being processed.
-4. **Cite or drop.** Every claim in an answer cites passages. A citation past
-   the horizon is a hard failure.
-5. **Conservative horizon.** If the position is uncertain, round backwards.
-6. **No copyrighted text in git.** `library/` is gitignored. Tests use
+4. **No LLM at reading time.** The LLM compiles the book into the database at
+   ingestion. Answers are assembled from that database inside the app. See
+   [ARCHITECTURE.md](ARCHITECTURE.md).
+5. **Quote or drop.** Every observation carries a verbatim quote that must
+   exist in its evidence passage.
+6. **Conservative horizon.** If the position is uncertain, round backwards.
+7. **No copyrighted text in git.** `library/` is gitignored. Tests use
    public-domain books.
 
 ---
@@ -35,97 +38,114 @@ Each phase ends with a decision gate: continue, change course, or stop.
 
 Build the measuring stick before building anything else.
 
-- [ ] Repo skeleton: Python project (uv or poetry), lint/format, pytest.
-- [ ] Provider abstraction: one `LLMClient` interface (an OpenAI-compatible
-  adapter for vLLM, llama.cpp, or Ollama first; an Anthropic adapter for
-  public-domain development) and one `Embedder` interface.
-  - Each series has an allowed-provider list, so copyrighted books can only
-    go to self-hosted models.
+- [ ] Repo skeleton: Python project (uv), lint/format, pytest.
+- [ ] SQLite schema v0: series, books, chapters, passages, entities, aliases,
+  observations, profiles, summaries, anticipated Q&A, and runs. Every derived
+  table has `max_source_pos` and `run_id`.
+- [ ] Horizon-safe data-access layer. It is the *only* way to read derived
+  tables, and tests try to bypass it.
+- [ ] LLM provider abstraction:
+  - An OpenAI-compatible adapter (vLLM, llama.cpp, Ollama) and an Anthropic
+    adapter for public-domain development.
+  - Each series has an allowed-provider list.
   - Track tokens on every call.
+- [ ] Embedding abstraction pinned to one small model that can also run in a
+  browser.
+- [ ] Public-domain corpus: *The Count of Monte Cristo* plus one multi-book
+  series (Barsoom or Oz).
+- [ ] **Eval sets:**
+  - **Spoiler cases:** `{horizon, question, must_not_include[]}`, run
+    against what the app would show.
+  - **Coverage cases:** `{horizon, question, expected_facts[]}`.
+  - **A public set** on *Monte Cristo*.
+  - **A private set** under `library/evals/`:
+    - **Harry Potter:** about 30 worst-case leak questions.
+    - **Cradle:** about 30 usefulness and power-system questions.
+    - **Real questions** you write down while reading.
+- [ ] Eval runner: reports leak rate, coverage, and quote-check pass rate.
+
+**Gate:** the eval set runs end to end against a stub database.
+
+## Phase 1: Parse, search, and summaries (≈2 weeks)
+
+**EPUB → passages → keyword + meaning search → rolling summaries.** This is
+the cheapest database that can already answer recap and "where have I seen
+this?" questions.
+
+- [ ] EPUB parser:
+  - Spine order.
+  - **Splitting an omnibus into its books**, from the nested TOC, with a
+    manual override file.
+  - Chapter detection.
+  - Stripping front and back matter.
+  - Splitting chapters into passages of about 150–400 words, each with a
+    `pos`.
+- [ ] Indexes: FTS5 plus passage embeddings.
+- [ ] Rolling chapter summaries, book recaps, and "story so far" rollups.
+- [ ] CLI:
+  - `tome ingest`
+  - `tome search --at "b3 ch10" "scabbers"`
+  - `tome recap --at "b2 ch1"`
 - [ ] GPU pod runner script: upload, start vLLM, ingest, download the SQLite
   file, destroy the pod.
-- [ ] Download the public-domain corpus: *The Count of Monte Cristo* plus one
-  multi-book series (Barsoom or Oz).
-- [ ] **Spoiler eval set**, written by hand, about 40–60 cases:
-  `{horizon, question, must_include[], must_not_include[]}`.
-  Example: horizon = Monte Cristo ch. 30; Q: "Who is the Abbé Busoni?";
-  must_not_include: "Dantès".
-- [ ] Private eval sets (stored outside git, under `library/evals/`):
-  - **Harry Potter:** about 30 cases aimed at the worst-case leaks (Scabbers,
-    the Half-Blood Prince, Snape's loyalty, Horcruxes, R.A.B.).
-  - **Cradle:** about 30 cases for usefulness and the power system.
-- [ ] Eval runner: prints a leak rate, a "useful answer" score (a
-  model-judged rubric plus your own spot checks), and citation validity.
+- [ ] Compare open-model sizes (about 8–14B vs about 70B) for summary quality
+  on about 3 chapters.
 
-**Gate:** the eval set exists and runs end to end against a stub answerer.
+**Gate:** recaps are accurate and spoiler-free. Search returns the right
+passages for "where have I seen X?"
 
-## Phase 1: Spoiler-safe baseline (≈2–3 weeks)
+## Phase 2: The knowledge compiler (≈4–5 weeks). This is the core of the POC.
 
-**EPUB → passages → search + rolling summaries → cited answers.** No knowledge graph yet.
+- [ ] Mention extraction (structured JSON output) and **incremental alias
+  resolution in reading order**, with `established_at`. Test it on the
+  *Monte Cristo* reveals and on Scabbers / Pettigrew.
+- [ ] Observations: natural-language sentence, structured fields, status
+  (stated / claimed_by / inferred), and quote span. The **quote check** drops
+  any observation whose quote doesn't verify.
+- [ ] Relationships with a `pos`.
+- [ ] Entity profiles at checkpoints, built from the previous profile plus new
+  observations. Includes a support check.
+- [ ] Anticipated Q&A per chapter, cited and limited to text up to that point.
+- [ ] Ingestion audit report: how many observations were dropped by the quote
+  check, how many profile sentences were flagged, and leak-eval results.
+- [ ] Model-size comparison on the same sample. Keep the smallest model that
+  passes.
 
-- [ ] EPUB parser: spine order, **splitting an omnibus into its books** (from the
-  nested TOC, with a manual override file), chapter detection (TOC + heading heuristics),
-  stripping front and back matter, paragraph segmentation into passages of
-  about 150–400 words, assigning `pos`.
-- [ ] Indexing: full-text search (FTS5 or Postgres tsvector) plus embeddings.
-- [ ] Hybrid retrieval filtered by `pos ≤ horizon`, enforced in the query
-  layer. Callers cannot bypass it.
-- [ ] Rolling chapter summaries (chapter N summary built from chapter N plus
-  earlier summaries) and book recaps built from chapter summaries.
-- [ ] Answerer: retrieve → answer only from context → check every citation
-  against the horizon → drop unsupported sentences.
-- [ ] CLI: `tome ingest book.epub --series X --order 1`,
-  `tome ask --series X --at "b2 ch14" "who is Busoni?"`,
-  `tome recap --series X --at "b2 ch1"`.
-- [ ] Ingestion is resumable and checkpointed per chapter, and logs token
-  counts and cost.
-- [ ] Compare open-model sizes (about 8–14B vs about 70B) on a sample of about
-  3 chapters first. Run the full corpus only on the smallest model that passes
-  the evals.
+**Gate:** the database passes the spoiler eval with zero leaks, and the quote
+check passes for the vast majority of observations.
 
-**Gate:** leak rate is 0 on the hard check and near 0 on the soft check.
-Answers are useful enough that you reach for them while reading. Record the
-weak spots, which are likely aliases, "who is" for minor characters, and
-history across books. Those weak spots justify Phase 2.
+## Phase 3: The app, entirely on-device (≈3 weeks)
 
-## Phase 2: Structured layer (≈3–4 weeks), only where the baseline is weak
-
-- [ ] Mention extraction per chunk (structured JSON output): named
-  characters, places, factions, objects, with a free-text `type`.
-- [ ] **Incremental alias resolution in reading order**, with
-  `established_at` on each alias link. Run it on the Monte Cristo reveals.
-- [ ] Observations: `(subject, predicate, object|value, status ∈ {stated,
-  claimed_by, inferred}, evidence_passage, pos, run_id)`.
-- [ ] Entity profile at a given horizon: built from observations ≤ horizon,
-  cached at chapter checkpoints with `max_source_pos`.
-- [ ] "Who is X?" uses the entity profile + top mentions + first appearance.
-- [ ] Compare against the Phase 1 baseline on the same eval set: a small
-  local model vs a larger model. Keep a component only if it wins.
-
-**Gate:** the structured layer clearly beats the baseline on "who is this"
-and relationship questions. If it doesn't, ship the baseline and stop adding
-structure.
-
-## Phase 3: Something you can use while reading (≈2 weeks)
-
-- [ ] Thin web API (FastAPI) and a **mobile-first web page / PWA**: series
-  picker, a horizon bar that is always visible, ask box, recap button,
-  answer → evidence → passage.
-- [ ] Position capture: chapter picker, a "paste a sentence" fuzzy match, an
-  iOS Shortcut / Android share target that sends selected text, and
-  optionally screenshot OCR.
+- [ ] Query pipeline (in Python first, mostly SQL):
+  1. Horizon filter.
+  2. Match entities in the question against the horizon-filtered alias list.
+  3. Route the question by type.
+  4. Look up or search the database.
+  5. Assemble the answer with evidence links.
+- [ ] Coverage eval on real questions. This is **the viability test** (see
+  ARCHITECTURE.md).
+- [ ] **A PWA** that works offline and needs no server:
+  - SQLite-WASM and an in-browser embedding model.
+  - Series picker and an always-visible horizon bar.
+  - Ask box and recap button.
+  - Answer → evidence → passage.
+- [ ] Position capture:
+  - Chapter picker.
+  - Paste a sentence, matched fuzzily and locally against passages.
+  - An iOS Shortcut that hands selected text to the PWA, for example by
+    opening a URL with the text as a parameter.
 - [ ] "I finished a chapter" button. The horizon only moves forward when you
-  choose to move it.
-- [ ] Runs on a home machine. Reach it from your phone over Tailscale or
-  similar. No public hosting needed.
+  move it.
 
-**Gate:** you use it through one whole book of a real series.
+**Gate:** you use it through one whole book of a real series, and the
+coverage on real questions is good enough that you keep using it.
 
 ## Phase 4: Friends beta (≈ongoing)
 
-- [ ] Packaging: Docker Compose, or a single binary plus a SQLite file.
-- [ ] Multiple users, each with their own horizon. Shared ingestion per
-  series, because the same series only needs processing once.
+- [ ] Distribution: friends install the PWA and load a series database. They
+  must own the books (see the sharing note in ARCHITECTURE.md).
+- [ ] Each reader keeps their own horizon on their own device. A series is
+  compiled once.
 - [ ] Feedback button on answers ("wrong", "spoiled me", "missing"). Every
   "spoiled me" becomes a new eval case.
 - [ ] Mystery / unresolved-question tracking (first version).
@@ -140,9 +160,9 @@ source, or building an author-sanctioned companion pilot with one author.
 
 ## Things deliberately left out until there's evidence they're needed
 
-Graph database, ontology engine, contradiction reconciliation, magic-system
+Any LLM at reading time, graph database, ontology engine, contradiction reconciliation, magic-system
 modeling, maps, timeline UI, community editing, public wiki, native mobile
-apps, and DRM handling of any kind.
+apps (the PWA comes first), and DRM handling of any kind.
 
 ## Resolved questions
 

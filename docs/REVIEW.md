@@ -4,6 +4,12 @@ A critical review of [`original-direction.md`](original-direction.md), the plan 
 
 Date: 2026-10-14
 
+> **Update:** later decisions are in [DECISIONS.md](DECISIONS.md) and
+> [ARCHITECTURE.md](ARCHITECTURE.md), and they take precedence over this review.
+> The main change: no LLM is called at reading time. That removes the
+> reading-time parametric leak described in §3.3. The same risk now applies at
+> ingestion, where it is handled by the quote check.
+
 ---
 
 ## 1. TL;DR

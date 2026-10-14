@@ -108,24 +108,16 @@ each other. A rough throughput estimate:
   is the main way to waste money.
 - Prefer providers with per-second billing.
 
-### 3a. Answering questions while you read
+### 3a. Answering questions while you read: no LLM
 
-Ingestion is a batch job. Questions arrive one at a time while you read, and
-keeping a GPU running all day to answer them is wasteful. Options:
+**Decided:** questions are answered entirely inside the app, from the
+compiled database. No LLM is called at reading time, in the cloud or
+anywhere else. See [ARCHITECTURE.md](ARCHITECTURE.md).
 
-| Option | Privacy | Cost | Experience |
-|---|---|---|---|
-| **Serverless GPU** (RunPod Serverless, Modal) running the same open model, scaling to zero | Same as ingestion: rented hardware, no AI company | Pay per second of use, so cents per reading session | Cold start of roughly 30s to a few minutes on the first question, then fast |
-| Pod started at the beginning of a reading session | Same | ~$0.30–0.80/hr while it's up | Fast, but you have to remember to stop it |
-| Small model (~3B) on your Mac | Fully local | Free | Slow (about a minute per answer) and weaker answers |
-| Precomputed answers only (recaps, entity profiles at each chapter) | Fully local at read time | Free at read time | Instant, but no free-form questions |
-
-**Recommendation:**
-- **Precompute** recaps and entity profiles at chapter checkpoints during
-  ingestion. That covers "recap" and most of "who is X" with **no** model
-  needed at read time.
-- Use **serverless GPU** for free-form questions.
-- Accept the cold-start delay for the POC.
+This means:
+- The GPU is used only for ingestion.
+- Reading time costs nothing and works offline.
+- The app can be a PWA on the phone with no server.
 
 ### 4. How the two series work as test sets
 
@@ -175,11 +167,8 @@ These are the methods, in the order they'll be built:
 ### 6. Where it runs
 
 - **Phase 1–2:** a command-line tool on your Mac.
-- **Phase 3:** a small web server on the Mac, which your phone reaches over
-  Tailscale (free for personal use). The Mac needs to be awake. That's fine
-  for a POC.
-- **If it proves useful:** a small always-on host. The SQLite file and server
-  are tiny, so this costs a few dollars a month at most.
+- **Phase 3:** an offline PWA on your phone. It holds the SQLite database and
+  a small embedding model in the browser. No server and no Mac needed.
 
 ### 7. How development works
 
