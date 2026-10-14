@@ -13,7 +13,7 @@ EPUB (e.g. seven books in one file) cannot be detected reliably:
     split = "toc"        # "none" (default) | "toc" | "manual"
     book_level = 1       # split = "toc": TOC depth whose entries are books
     titles = ["Book One", "Book Two"]   # optional renames, in order
-    exclude = ["^Map of"]               # extra TOC titles (regex) to drop
+    exclude = ["^Map of"]               # extra TOC titles (regex) to drop, with their children
 
     # split = "manual": each book starts at the first TOC entry matching `start`
     [[books]]
@@ -186,13 +186,15 @@ def _parse(epub: Epub, layout: Layout, sha: str) -> ParseResult:
             return si, 0
         return si, anchors[entry.fragment]
 
-    def build(entry: TocEntry, level: int) -> _Node:
+    def build(entry: TocEntry, level: int, dropped: bool = False) -> _Node:
+        # An exclude pattern drops the entry and everything under it (e.g. a
+        # "Bonus Material" group); excluded children still mark boundaries.
+        dropped = dropped or any(rx.search(entry.title) for rx in exclude)
         start = locate(entry)
-        title_excluded = any(rx.search(entry.title) for rx in exclude) or (
-            fold(entry.title) == book_title_folded
-        )
+        title_excluded = dropped or fold(entry.title) == book_title_folded
         keep = start is not None and not title_excluded and not _is_matter(epub, start[0])
-        return _Node(entry, level, keep, [build(c, level + 1) for c in entry.children], start)
+        children = [build(c, level + 1, dropped) for c in entry.children]
+        return _Node(entry, level, keep, children, start)
 
     roots = [build(e, 1) for e in epub.toc]
     all_nodes = [n for r in roots for n in _walk(r)]
