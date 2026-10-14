@@ -39,9 +39,15 @@ Each phase ends with a decision gate: continue, change course, or stop.
 Build the measuring stick before building anything else.
 
 - [ ] Repo skeleton: Python project (uv), lint/format, pytest.
-- [ ] SQLite schema v0: series, books, chapters, passages, entities, aliases,
-  observations, profiles, summaries, anticipated Q&A, and runs. Every derived
-  table has `max_source_pos` and `run_id`.
+- [ ] SQLite schema v0, split into two files:
+  - **The series pack**, read-only:
+    - a manifest;
+    - books, chapters and passages;
+    - entities, aliases, observations, profiles, summaries and anticipated Q&A;
+    - runs.
+    Every derived table has `max_source_pos` and `run_id`.
+  - **`user.sqlite`:** the library list, plus a stable horizon anchor for each
+    series.
 - [ ] Horizon-safe data-access layer. It is the *only* way to read derived
   tables, and tests try to bypass it.
 - [ ] LLM provider abstraction:
@@ -126,7 +132,8 @@ check passes for the vast majority of observations.
   ARCHITECTURE.md).
 - [ ] **A PWA** that works offline and needs no server:
   - SQLite-WASM and an in-browser embedding model.
-  - Series picker and an always-visible horizon bar.
+  - Pack import (file picker, share sheet, or link), a library view, and a series picker.
+  - An always-visible horizon bar for each series.
   - Ask box and recap button.
   - Answer → evidence → passage.
 - [ ] Position capture:

@@ -136,6 +136,88 @@ answer must stay limited to the retrieved snippets.
   could rebuild the passages from each user's own EPUB and ship only the
   derived data.
 
+## Series packs: one app, many series
+
+**One app, and one database file per series** (a "series pack"). The app
+keeps a library of packs. You don't need a separate app for each series.
+
+```
+App (one install)
+├── user.sqlite            ← your data: library list, horizon per series, settings
+├── packs/
+│   ├── harry-potter.tome  ← SQLite, read-only, compiled at ingestion
+│   ├── cradle.tome
+│   └── monte-cristo.tome
+└── embedding model        ← one model, shared by all packs
+```
+
+### Why one file per series
+
+- **Content and your data are kept apart.** Packs are read-only compiler
+  output. Your reading positions live in `user.sqlite`. Replacing a pack never
+  touches your progress.
+- **Packs can be replaced.** When a new book comes out or a better model
+  recompiles a series, you swap in the new pack.
+- **Packs are portable.** Import one via the file picker, the share sheet, or
+  a download link. Hand one to a friend who owns the books. Delete one to free
+  space.
+- **Isolation is a safety net.** A question asked in one series can never pull
+  in text from another.
+- **The app opens one pack at a time**, the series you're currently asking
+  about. Searching across series is rarely wanted. If it ever is, SQLite can
+  attach several files at once.
+
+### The pack manifest
+
+Each pack has a manifest table that the app checks when you import it:
+
+| Field | Purpose |
+|---|---|
+| `pack_id`, `series_title`, `books[]` | Library display, reading order |
+| `pack_version`, `compiled_at`, `compiler_version`, `llm_model` | Provenance; deciding whether a pack should be upgraded |
+| `schema_version` | The app refuses packs it can't read, or migrates them |
+| `embedding_model_id` | **Must match the app's embedding model.** If it doesn't, the pack can't be searched by meaning, so the app warns you or falls back to keyword search. |
+| `content_hash` | Integrity check; tells the app when two packs are the same |
+
+### A horizon that survives recompiles
+
+The integer `pos` may change when a series is re-parsed or recompiled. So
+`user.sqlite` stores your horizon as a **stable anchor** made of three parts:
+- the book number;
+- the chapter number;
+- the first words of the passage you were at, as a text fingerprint.
+
+Every time the app opens a pack, it converts that anchor back into a `pos`. If
+the match is uncertain, it rounds backward (invariant 6).
+
+### Adding books to a series that's still being written
+
+Ingestion runs in reading order, so compiling book N+1 needs only the stored
+state from books 1–N:
+- the alias table;
+- the latest entity profiles;
+- the summaries so far.
+
+Positions in earlier books never change. The compiler produces a new pack
+version with the new book appended, and you import it over the old one.
+
+### Shared universes (later)
+
+Some readers follow several connected series in one fictional universe, such
+as Sanderson's Cosmere. These can be compiled into a single **universe pack**
+with an explicit reading order, which defines a single `pos` axis across the
+series. The same pack format handles this; it's just a larger pack.
+
+### Storage on the phone
+
+- Each pack is roughly 20–60 MB (HP and Cradle together come to under about
+  100 MB).
+- The PWA stores packs in the browser's private file storage (OPFS). It
+  calls `navigator.storage.persist()` so iOS is less likely to delete them
+  under storage pressure.
+- Keep the original pack files on your Mac or in cloud storage, so you can
+  re-import them after a phone reset.
+
 ## The viability test, restated
 
 The POC passes when, on Harry Potter and Cradle:
