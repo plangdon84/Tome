@@ -38,39 +38,51 @@ Each phase ends with a decision gate: continue, change course, or stop.
 
 Build the measuring stick before building anything else.
 
-- [ ] Repo skeleton: Python project (uv), lint/format, pytest.
-- [ ] SQLite schema v0, split into two files:
+- [x] Repo skeleton: Python project (uv), lint/format, pytest.
+- [x] SQLite schema v0, split into two files (`tome/migrations/`):
   - **The series pack**, read-only:
     - a manifest;
     - books, chapters and passages;
     - entities, aliases, observations, profiles, summaries and anticipated Q&A;
     - runs.
     Every derived table has `max_source_pos` and `run_id`.
+    *Done. Also added `entity_identities` (reveals such as Busoni = the Count),
+    `mentions` and `embeddings`, and a trigger that enforces quote-or-drop.*
   - **`user.sqlite`:** the library list, plus a stable horizon anchor for each
     series.
-- [ ] Horizon-safe data-access layer. It is the *only* way to read derived
-  tables, and tests try to bypass it.
-- [ ] LLM provider abstraction:
+- [x] Horizon-safe data-access layer. It is the *only* way to read derived
+  tables, and tests try to bypass it. *(`tome/horizon.py`: horizon-filtered
+  TEMP views plus an SQLite authorizer that refuses direct reads.)*
+- [x] LLM provider abstraction (`tome/llm/`):
   - An OpenAI-compatible adapter (vLLM, llama.cpp, Ollama) and an Anthropic
-    adapter for public-domain development.
+    adapter for public-domain development. *OpenAI-compatible adapter done
+    (plus OpenRouter, with a JSON-schema helper). The Anthropic adapter is
+    deferred: OpenRouter covers public-domain development.*
   - Each series has an allowed-provider list.
   - Track tokens on every call.
-- [ ] Embedding abstraction pinned to one small model that can also run in a
-  browser.
+- [x] Embedding abstraction pinned to one small model that can also run in a
+  browser. *(Xenova/bge-small-en-v1.5, quantized ONNX at a pinned revision.)*
 - [ ] Public-domain corpus: *The Count of Monte Cristo* plus one multi-book
-  series (Barsoom or Oz).
-- [ ] **Eval sets:**
+  series (Barsoom or Oz). *Monte Cristo done (Standard Ebooks, with Project
+  Gutenberg as fallback; the Gutenberg edition's five nested volumes also
+  serve as an omnibus-split fixture). The multi-book series is still to do.*
+- [x] **Eval sets:**
   - **Spoiler cases:** `{horizon, question, must_not_include[]}`, run
     against what the app would show.
   - **Coverage cases:** `{horizon, question, expected_facts[]}`.
   - **A public set** on *Monte Cristo*.
-  - **A private set** under `library/evals/`:
+  - **A private set** under `library/evals/` *(templates committed in
+    `evals/templates/private/`; `tome eval init-private` copies them. You
+    fill in the cases.)*:
     - **Harry Potter:** about 30 worst-case leak questions.
     - **Cradle:** about 30 usefulness and power-system questions.
     - **Real questions** you write down while reading.
-- [ ] Eval runner: reports leak rate, coverage, and quote-check pass rate.
+- [x] Eval runner: reports leak rate, coverage, and quote-check pass rate.
 
-**Gate:** the eval set runs end to end against a stub database.
+**Gate:** the eval set runs end to end against a stub database. ✅ *Met: `uv run
+tome eval run --stub` shows 0/10 leaks, 11/11 coverage and an 84.6%
+quote-check pass rate. The stub plants two bad quotes on purpose, and a
+meta-test confirms that an answerer which ignores the horizon is caught.*
 
 ## Phase 1: Parse, search, and summaries (≈2 weeks)
 
@@ -78,19 +90,20 @@ Build the measuring stick before building anything else.
 the cheapest database that can already answer recap and "where have I seen
 this?" questions.
 
-- [ ] EPUB parser:
+- [x] EPUB parser *(done early, in Phase 0)*:
   - Spine order.
   - **Splitting an omnibus into its books**, from the nested TOC, with a
-    manual override file.
+    manual override file. *(Layout TOML: `split = "toc"` or `"manual"`;
+    still to be tried on the real HP omnibus.)*
   - Chapter detection.
   - Stripping front and back matter.
   - Splitting chapters into passages of about 150–400 words, each with a
     `pos`.
-- [ ] Indexes: FTS5 plus passage embeddings.
+- [x] Indexes: FTS5 plus passage embeddings *(done early: `tome pack build-text --embed`)*.
 - [ ] Rolling chapter summaries, book recaps, and "story so far" rollups.
 - [ ] CLI:
   - `tome ingest`
-  - `tome search --at "b3 ch10" "scabbers"`
+  - `tome search --at "b3 ch10" "scabbers"` *(exists: keyword search, horizon-filtered)*
   - `tome recap --at "b2 ch1"`
 - [ ] GPU pod runner script: upload, start vLLM, ingest, download the SQLite
   file, destroy the pod.
