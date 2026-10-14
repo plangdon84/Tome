@@ -243,19 +243,44 @@ class PackWriter:
         *,
         entity_id: int,
         same_as_entity_id: int,
-        established_at: int,
+        evidence_passage_id: int,
+        quote: str,
         run_id: int,
-        evidence_passage_id=None,
         max_source_pos=None,
-    ) -> int:
+    ) -> int | None:
+        """Record that the text *states* two entities are one, or drop it (return None).
+
+        The reveal point is the evidence passage; ``quote`` must be found in it.
+        Inferences ("the priest must be Dantès") belong in observations with
+        status 'inferred', never here.
+        """
+        stats = self.quote_stats.setdefault(run_id, QuoteStats())
+        stats.candidates += 1
+        passage = self.passage(evidence_passage_id)
+        span = locate_quote(passage["text"], quote)
+        if span is None:
+            stats.dropped += 1
+            if len(stats.dropped_examples) < 50:
+                stats.dropped_examples.append(
+                    {
+                        "pos": passage["pos"],
+                        "quote": quote,
+                        "identity": [entity_id, same_as_entity_id],
+                    }
+                )
+            return None
+        start, end = span
         return self._insert(
             "entity_identities",
             {
                 "entity_id": entity_id,
                 "same_as_entity_id": same_as_entity_id,
-                "established_at": established_at,
+                "established_at": passage["pos"],
                 "evidence_passage_id": evidence_passage_id,
-                "max_source_pos": max_source_pos or established_at,
+                "quote_span": passage["text"][start:end],
+                "quote_start": start,
+                "quote_end": end,
+                "max_source_pos": max_source_pos or passage["pos"],
                 "run_id": run_id,
             },
         )

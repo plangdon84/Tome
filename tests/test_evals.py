@@ -37,9 +37,10 @@ def test_end_to_end_on_stub_pack(stub_pack):
     report = run_eval(stub_pack, load_cases(PUBLIC))
     assert report.leak_rate == 0.0
     assert report.coverage_score == 1.0
-    # The stub plants two observations with invented quotes; they were dropped.
-    assert report.quotes.candidates == 13 and report.quotes.dropped == 2
-    assert report.quotes.stored == report.quotes.stored_verified == 11
+    # The stub plants two observations with invented quotes and one identity that
+    # is only an inference (no stating quote); all three were dropped.
+    assert report.quotes.candidates == 21 and report.quotes.dropped == 3
+    assert report.quotes.stored == report.quotes.stored_verified == 18
     text = format_report(report)
     assert "Leak rate:        0.0%" in text
     json.dumps(report.to_json())

@@ -26,6 +26,13 @@ STOPWORDS = frozenset(
     "were what when where which who whom why will with you your".split()
 )
 QA_MIN_OVERLAP = 0.5
+# Default posture is "what the text has shown to be true". Inferences are only
+# offered when the question itself asks for speculation (DECISIONS.md §9).
+SPECULATIVE_RE = re.compile(
+    r"\b(might|could|maybe|perhaps|suspect\w*|theor\w*|guess\w*|possibl\w*|"
+    r"speculat\w*|likely|hint\w*|clues?)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -83,15 +90,28 @@ def _identity_closure(reader: HorizonReader, entity_id: int) -> list[int]:
     return seen
 
 
-def _entity_pieces(reader: HorizonReader, entity_id: int) -> list[Piece]:
+def is_speculative(question: str) -> bool:
+    return bool(SPECULATIVE_RE.search(question))
+
+
+def _entity_pieces(
+    reader: HorizonReader, entity_id: int, *, speculative: bool = False
+) -> list[Piece]:
     pieces = []
     profile = reader.latest_profile(entity_id)
     since = 0
     if profile:
         pieces.append(Piece("profile", profile["profile_text"], profile["max_source_pos"]))
         since = profile["max_source_pos"]
-    for o in reader.observations(entity_id, since_pos=since):
-        prefix = "" if o["status"] == "stated" else f"({o['status']}) "
+    for o in reader.observations(entity_id, since_pos=since, include_inferred=speculative):
+        if o["status"] == "claimed":
+            # A claim is shown as a claim, attributed, never as fact.
+            names = reader.names(o["claimed_by_entity_id"]) if o["claimed_by_entity_id"] else []
+            prefix = f"({names[0] if names else 'someone'} claims) "
+        elif o["status"] == "inferred":
+            prefix = "(inference, not confirmed by the text) "
+        else:
+            prefix = ""
         pieces.append(
             Piece("observation", prefix + o["sentence"], o["max_source_pos"], [o["evidence_pos"]])
         )
@@ -106,6 +126,7 @@ def _content_words(text: str) -> set[str]:
 
 def answer(reader: HorizonReader, question: str, *, max_passages: int = 3) -> Answer:
     pieces: list[Piece] = []
+    speculative = is_speculative(question)
     matched = match_entities(reader, question)
     seen_entities: list[int] = []
     for _, entity_id in matched:
@@ -119,7 +140,7 @@ def answer(reader: HorizonReader, question: str, *, max_passages: int = 3) -> An
                     pieces.append(
                         Piece("identity", f"Also known as: {', '.join(names)}.", reader.horizon)
                     )
-            pieces.extend(_entity_pieces(reader, eid))
+            pieces.extend(_entity_pieces(reader, eid, speculative=speculative))
 
     if RECAP_RE.search(question) and not matched:
         rollup = reader.latest_rollup()

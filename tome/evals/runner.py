@@ -175,7 +175,8 @@ Answerer = Callable[[HorizonReader, str], Answer]
 
 
 def quote_report(pack: str | Path) -> QuoteReport:
-    """Compiler drop stats from ``runs`` plus a re-check of every stored quote."""
+    """Compiler drop stats from ``runs`` plus a re-check of every stored quote
+    (observations and identity reveals)."""
     with HorizonReader(pack, _max_pos(pack)) as r:
         cands = dropped = 0
         for run in r.query("SELECT stats_json FROM runs"):
@@ -186,6 +187,11 @@ def quote_report(pack: str | Path) -> QuoteReport:
             "SELECT o.quote_span, o.quote_start, o.quote_end, o.pos AS opos, p.pos AS ppos,"
             " p.text FROM h_observations o JOIN h_passages p"
             " ON p.passage_id = o.evidence_passage_id"
+        )
+        rows += r.query(
+            "SELECT i.quote_span, i.quote_start, i.quote_end, i.established_at AS opos,"
+            " p.pos AS ppos, p.text FROM h_entity_identities i JOIN h_passages p"
+            " ON p.passage_id = i.evidence_passage_id"
         )
         ok = sum(
             1

@@ -360,13 +360,17 @@ class HorizonReader:
             (entity_id,),
         )
 
-    def observations(self, entity_id: int, since_pos: int = 0) -> list[sqlite3.Row]:
+    def observations(
+        self, entity_id: int, since_pos: int = 0, *, include_inferred: bool = False
+    ) -> list[sqlite3.Row]:
+        """Observations about an entity. Inferred ones only on request (DECISIONS.md §9)."""
         return self.query(
             "SELECT o.*, p.pos AS evidence_pos FROM h_observations o"
             " JOIN h_passages p ON p.passage_id = o.evidence_passage_id"
             " WHERE (o.subject_entity_id = ? OR o.object_entity_id = ?) AND o.pos > ?"
+            " AND (? OR o.status <> 'inferred')"
             " ORDER BY o.pos",
-            (entity_id, entity_id, since_pos),
+            (entity_id, entity_id, since_pos, include_inferred),
         )
 
     def relationships(self, entity_id: int) -> list[sqlite3.Row]:

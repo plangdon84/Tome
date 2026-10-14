@@ -66,7 +66,13 @@ def tiny_pack(tmp_path) -> Path:
     w.add_alias(entity_id=early, surface_form="The Stranger", established_at=2, run_id=run)
     w.add_alias(entity_id=late, surface_form="Secret Name", established_at=7, run_id=run)
     w.add_alias(entity_id=early, surface_form="Secret Name", established_at=7, run_id=run)
-    w.add_identity(entity_id=early, same_as_entity_id=late, established_at=7, run_id=run)
+    w.add_identity(
+        entity_id=early,
+        same_as_entity_id=late,
+        evidence_passage_id=w.passage_at(7)["passage_id"],
+        quote="the secret is out",
+        run_id=run,
+    )
     for pos, tag in ((2, "early"), (7, "late")):
         pid = w.passage_at(pos)["passage_id"]
         w.add_observation(

@@ -118,14 +118,16 @@ ENTITIES = {
     "andrea": ("person", 55, [("Andrea Cavalcanti", 55), ("Andrea", 55)]),
 }
 
-# (entity, same_as, chapter established)
+# (entity, same_as, chapter where the text states it, quote from that passage).
+# The last one is an inference with no stating quote; the compiler drops it.
 IDENTITIES = [
-    ("wilmore", "dantes", 25),
-    ("sinbad", "count", 35),
-    ("andrea", "benedetto", 64),
-    ("wilmore", "count", 69),
-    ("busoni", "count", 82),
-    ("count", "dantes", 92),
+    ("wilmore", "dantes", 25, "under the name of Lord Wilmore"),
+    ("sinbad", "count", 35, "the man he knew as Sinbad the Sailor"),
+    ("andrea", "benedetto", 64, "calls him Benedetto"),
+    ("wilmore", "count", 69, "pearly teeth of the Count of Monte Cristo"),
+    ("busoni", "count", 82, "the Abbé Busoni himself,” replied Monte Cristo"),
+    ("count", "dantes", 92, "flees crying “Edmond Dantès!”"),
+    ("sinbad", "dantes", 30, "Sinbad the Sailor was Edmond Dantès"),
 ]
 
 # (entity, checkpoint chapter, display name, text)
@@ -341,6 +343,16 @@ OBSERVATIONS = [
         None,
     ),
     ("fernand", 92, "fate", "Morcerf shoots himself.", "later shoots himself", "stated", None),
+    # An inference: true in the end, but the text has not said so at ch 30.
+    (
+        "sinbad",
+        30,
+        "may_be",
+        "The bearded man who saved the Morrels may be Edmond Dantès.",
+        "A bearded man watching from behind the sentry-box",
+        "inferred",
+        None,
+    ),
     # Two candidates whose quotes are not in the text: the quote check drops them.
     (
         "count",
@@ -438,12 +450,12 @@ def build_stub_pack(path: str | Path, *, overwrite: bool = True) -> Path:
                 evidence_passage_id=ch_passage(ch),
                 run_id=run,
             )
-    for a, b, ch in IDENTITIES:
+    for a, b, ch, quote in IDENTITIES:
         w.add_identity(
             entity_id=ids[a],
             same_as_entity_id=ids[b],
-            established_at=ch_pos(ch),
             evidence_passage_id=ch_passage(ch),
+            quote=quote,
             run_id=run,
         )
     prev: dict[str, int] = {}

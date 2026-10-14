@@ -188,3 +188,30 @@ These are the methods, in the order they'll be built:
   can't run away.
 - Optionally, an API key with a spending cap for public-domain development.
 - **Git.**
+
+### 9. What counts as known: stated, not inferred (decided 2026-10-14)
+
+**By default, an answer shows only what the text has shown to be true by the
+reader's horizon.** An LLM's inference can be wrong, and when it is right it
+is often a soft spoiler. (For example, at the end of *Monte Cristo* ch 30 a
+reader can guess that "Sinbad the Sailor" is Dantès, but the text hasn't said
+so.)
+
+In practice:
+- **Identity reveals are stated.** An alias or identity link (Busoni → the
+  Count, Scabbers → Pettigrew) is established only at the passage where the
+  text says so, and it must carry a verbatim quote from that passage. The pack
+  enforces this with a trigger, the same way it enforces quote-or-drop for
+  observations. The compiler may not merge two characters because it "must
+  be" the same person.
+- **Observation statuses:**
+  - `stated`: shown as fact.
+  - `claimed`: shown, attributed to whoever claims it ("the Count claims ...").
+  - `inferred`: hidden by default. Shown only when the question asks for
+    speculation ("Who might the priest be?", "any theories ...?"), and then
+    labelled as unconfirmed.
+- **Profiles, summaries and anticipated answers** are written from stated
+  facts only. The Phase 2 support check flags sentences that rely on
+  inference.
+- **Spoiler evals** treat an unstated identity as a leak (case
+  `mc-s11-sinbad-not-stated-dantes`).

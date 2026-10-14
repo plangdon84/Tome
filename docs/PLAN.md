@@ -80,8 +80,9 @@ Build the measuring stick before building anything else.
 - [x] Eval runner: reports leak rate, coverage, and quote-check pass rate.
 
 **Gate:** the eval set runs end to end against a stub database. ✅ *Met: `uv run
-tome eval run --stub` shows 0/10 leaks, 11/11 coverage and an 84.6%
-quote-check pass rate. The stub plants two bad quotes on purpose, and a
+tome eval run --stub` shows 0/11 leaks, 11/11 coverage and an 85.7%
+quote-check pass rate. The stub plants two bad quotes and one unstated
+reveal on purpose, and a
 meta-test confirms that an answerer which ignores the horizon is caught.*
 
 ## Phase 1: Parse, search, and summaries (≈2 weeks)
