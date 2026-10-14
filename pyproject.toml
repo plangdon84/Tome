@@ -41,6 +41,7 @@ ignore = ["RUF001", "RUF002", "RUF003", "SIM905"]  # curly quotes and dashes are
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["tests"]
 addopts = "-ra"
 markers = [
     "live: calls a real LLM API and costs money (run with --run-live)",

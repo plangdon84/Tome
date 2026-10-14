@@ -113,3 +113,16 @@ def tiny_pack(tmp_path) -> Path:
     w.finalize()
     w.close()
     return path
+
+
+@pytest.fixture(scope="session")
+def corpus_dir() -> Path:
+    return REPO / "corpus"
+
+
+@pytest.fixture(scope="session")
+def monte_cristo_epub(corpus_dir) -> Path:
+    path = corpus_dir / "monte-cristo.epub"
+    if not path.exists():
+        pytest.skip("run: uv run tome corpus fetch monte-cristo")
+    return path
