@@ -6,6 +6,12 @@ structure only where it measurably helps.**
 
 Each phase ends with a decision gate: continue, change course, or stop.
 
+> **The concrete choices for your setup are in [DECISIONS.md](DECISIONS.md).**
+> In short: a cloud API for the LLM (start with the cheapest tier that passes
+> the evals), everything else local on an Intel Mac, SQLite, *Harry Potter* as
+> the worst case for spoiler leaks, *Cradle* as the realistic usefulness test,
+> and position capture via chapter picker plus the iOS share sheet.
+
 ---
 
 ## Core invariants (apply in every phase)
@@ -30,17 +36,19 @@ Each phase ends with a decision gate: continue, change course, or stop.
 Build the measuring stick before building anything else.
 
 - [ ] Repo skeleton: Python project (uv or poetry), lint/format, pytest.
-- [ ] Provider abstraction: one `LLMClient` interface (an OpenAI-compatible
-  endpoint) and one `Embedder` interface. Config picks Ollama, local
-  llama.cpp, or a cloud API.
+- [ ] Provider abstraction: one `LLMClient` interface (Anthropic adapter first;
+  a local/OpenAI-compatible adapter later) and one `Embedder` interface.
+  Track token usage and cost on every call, and enforce a spending cap.
 - [ ] Download the public-domain corpus: *The Count of Monte Cristo* plus one
   multi-book series (Barsoom or Oz).
 - [ ] **Spoiler eval set**, written by hand, about 40–60 cases:
   `{horizon, question, must_include[], must_not_include[]}`.
   Example: horizon = Monte Cristo ch. 30; Q: "Who is the Abbé Busoni?";
   must_not_include: "Dantès".
-- [ ] A second, small private eval set on a series you know well and own as
-  an EPUB (stored outside git), so results reflect the real use case.
+- [ ] Private eval sets (stored outside git, under `library/evals/`):
+  - **Harry Potter:** about 30 cases aimed at the worst-case leaks (Scabbers,
+    the Half-Blood Prince, Snape's loyalty, Horcruxes, R.A.B.).
+  - **Cradle:** about 30 cases for usefulness and the power system.
 - [ ] Eval runner: prints a leak rate, a "useful answer" score (a
   model-judged rubric plus your own spot checks), and citation validity.
 
@@ -50,7 +58,8 @@ Build the measuring stick before building anything else.
 
 **EPUB → passages → search + rolling summaries → cited answers.** No knowledge graph yet.
 
-- [ ] EPUB parser: spine order, chapter detection (TOC + heading heuristics),
+- [ ] EPUB parser: spine order, **splitting an omnibus into its books** (from the
+  nested TOC, with a manual override file), chapter detection (TOC + heading heuristics),
   stripping front and back matter, paragraph segmentation into passages of
   about 150–400 words, assigning `pos`.
 - [ ] Indexing: full-text search (FTS5 or Postgres tsvector) plus embeddings.
@@ -64,7 +73,9 @@ Build the measuring stick before building anything else.
   `tome ask --series X --at "b2 ch14" "who is Busoni?"`,
   `tome recap --series X --at "b2 ch1"`.
 - [ ] Ingestion is resumable and checkpointed per chapter, and logs token
-  counts and time so you get **real compute numbers for your hardware**.
+  counts and cost.
+- [ ] Compare model tiers on a sample of about 3 chapters first. Run the full
+  corpus only on the cheapest tier that passes the evals.
 
 **Gate:** leak rate is 0 on the hard check and near 0 on the soft check.
 Answers are useful enough that you reach for them while reading. Record the
@@ -127,15 +138,7 @@ Graph database, ontology engine, contradiction reconciliation, magic-system
 modeling, maps, timeline UI, community editing, public wiki, native mobile
 apps, and DRM handling of any kind.
 
-## Open questions for you
+## Resolved questions
 
-1. **Hardware:** what GPU, CPU, and RAM do you have, or do you have an
-   M-series Mac? This decides local vs rented GPU vs API for ingestion.
-2. **First real series:** which series do you most want this for, and do you
-   own DRM-free EPUBs of it?
-3. **Reading setup:** Kindle app, Apple Books, Kobo, or e-ink? This decides
-   which position-capture method to build first.
-4. **Cloud models:** are you OK using a no-training, no-retention API for
-   ingestion of your own books during development, or strictly local?
-5. **Storage:** SQLite (simplest, single file) or Postgres (as originally
-   planned)?
+Your answers to the original open questions (hardware, books, reading app,
+cloud policy, storage) are recorded in [DECISIONS.md](DECISIONS.md).
