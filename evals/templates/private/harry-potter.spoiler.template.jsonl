@@ -1,0 +1,8 @@
+// Worst-case leak questions for Harry Potter. Copy to library/evals/ and extend to ~30.
+// Horizons assume the omnibus is split into 7 books (layout split = "toc") and that
+// chapter numbers match the printed ones; check with `tome parse` before trusting them.
+{"id": "hp-s01-scabbers", "series": "harry-potter", "horizon": "b3 ch10", "question": "Who is Scabbers?", "must_not_include": ["Pettigrew", "Wormtail", "Animagus"], "subject_terms": ["Scabbers"], "notes": "Scabbers = Peter Pettigrew, revealed in the Shrieking Shack (b3 ch17-19)."}
+{"id": "hp-s02-half-blood-prince", "series": "harry-potter", "horizon": "b6 ch9", "question": "Who is the Half-Blood Prince?", "must_not_include": ["Snape", "Severus", "Eileen Prince"], "subject_terms": ["Half-Blood Prince", "Prince"], "notes": "Revealed at the end of book 6."}
+{"id": "hp-s03-moody", "series": "harry-potter", "horizon": "b4 ch20", "question": "Who is Mad-Eye Moody?", "must_not_include": ["Barty Crouch Jr", "Crouch Junior", "Polyjuice"], "subject_terms": ["Moody"], "notes": "Impostor revealed b4 ch35."}
+{"id": "hp-s04-sirius", "series": "harry-potter", "horizon": "b3 ch5", "question": "Who is Sirius Black?", "must_not_include": ["godfather", "innocent", "framed"], "subject_terms": ["Sirius", "Black"]}
+{"id": "hp-s05-rab", "series": "harry-potter", "horizon": "b6 ch30", "question": "Who is R.A.B.?", "must_not_include": ["Regulus"], "subject_terms": ["R.A.B."]}

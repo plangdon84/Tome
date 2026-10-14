@@ -1,0 +1,4 @@
+// Real questions you had while reading, logged with the horizon you were at.
+// Write the question first; fill expected_facts once you know the answer (from the
+// text up to that horizon only). This file is the viability test.
+{"id": "rn-0001", "series": "cradle", "horizon": "b4 ch12", "question": "Wait, who was the guy with the hammer again?", "expected_facts": ["FILL ME IN"], "notes": "asked 2026-10-14 on the train"}

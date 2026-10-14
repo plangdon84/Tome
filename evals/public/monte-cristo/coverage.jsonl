@@ -1,0 +1,11 @@
+{"id": "mc-c01-arrest", "series": "monte-cristo", "horizon": "b1 ch8", "question": "Why was Dantès arrested?", "expected_facts": ["Danglars", "Bonapartist", "letter"]}
+{"id": "mc-c02-mercedes", "series": "monte-cristo", "horizon": "b1 ch3", "question": "Who is Mercédès?", "expected_facts": ["Catalan", "betrothed|engaged|fiancée|bride"]}
+{"id": "mc-c03-faria", "series": "monte-cristo", "horizon": "b1 ch18", "question": "Who is the Abbé Faria?", "expected_facts": ["prisoner|Number 27|No. 27", "treasure|Spada"]}
+{"id": "mc-c04-wilmore", "series": "monte-cristo", "horizon": "b1 ch25", "question": "Who is Lord Wilmore?", "expected_facts": ["Dantès"]}
+{"id": "mc-c05-morrel-saved", "series": "monte-cristo", "horizon": "b1 ch30", "question": "Who saved the house of Morrel?", "expected_facts": ["Sinbad the Sailor"]}
+{"id": "mc-c06-recap-30", "series": "monte-cristo", "horizon": "b1 ch30", "question": "Recap the story so far", "expected_facts": ["Château d’If|Chateau d'If", "Faria"]}
+{"id": "mc-c07-andrea", "series": "monte-cristo", "horizon": "b1 ch64", "question": "Who is Andrea Cavalcanti?", "expected_facts": ["Benedetto"]}
+{"id": "mc-c08-wilmore-count", "series": "monte-cristo", "horizon": "b1 ch69", "question": "Who is Lord Wilmore?", "expected_facts": ["Count of Monte Cristo|Monte Cristo"]}
+{"id": "mc-c09-haydee", "series": "monte-cristo", "horizon": "b1 ch77", "question": "Who is Haydée?", "expected_facts": ["Ali Tepelini|Ali Pasha", "daughter"]}
+{"id": "mc-c10-busoni", "series": "monte-cristo", "horizon": "b1 ch82", "question": "Who is the Abbé Busoni?", "expected_facts": ["Count of Monte Cristo|Monte Cristo"]}
+{"id": "mc-c11-count", "series": "monte-cristo", "horizon": "b1 ch117", "question": "Who is the Count of Monte Cristo?", "expected_facts": ["Edmond Dantès"]}

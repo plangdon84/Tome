@@ -1,0 +1,5 @@
+// Usefulness questions for Cradle. Copy to library/evals/ and extend to ~30.
+// Fill expected_facts from your own reading; these are placeholders.
+{"id": "cr-c01-ranks", "series": "cradle", "horizon": "b1 ch10", "question": "What are the sacred arts ranks so far?", "expected_facts": ["Foundation", "Copper", "Iron", "Jade"]}
+{"id": "cr-c02-who-is", "series": "cradle", "horizon": "b1 ch5", "question": "Who is Lindon?", "expected_facts": ["Unsouled"]}
+{"id": "cr-c03-power-allows", "series": "cradle", "horizon": "b3 ch1", "question": "What can an Iron do that a Copper can't?", "expected_facts": ["FILL ME IN"]}
