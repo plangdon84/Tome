@@ -246,7 +246,7 @@ directly comparable results.
 **Hosting recommendation: AWS EC2, one instance type for both model
 sizes.**
 - **Instance:** `g6e.xlarge` (one NVIDIA L40S, 48 GB), roughly $1.9/hr
-  on-demand in us-east-1, less on spot. Check current prices.
+  on-demand in us-east-1. Check current prices.
   - It runs an 8–14B model in 16-bit with room to spare.
   - It runs a ~70B model at 4-bit (AWQ/GPTQ, ~40 GB of weights), with a
     small KV cache. Chapter-length prompts at low concurrency should fit.
@@ -255,11 +255,19 @@ sizes.**
 - **Setup:** the Deep Learning AMI plus vLLM, with the pod workflow from §2
   (run against localhost, download the pack, terminate the instance and
   delete its volume). Set an auto-stop timer.
+- **On-demand, not spot (decided 2026-10-15).** Each eval run is a short,
+  throwaway job: launch the instance, load the model, build the database,
+  download it, terminate. Spot would save only a few dollars per run, and a
+  reclaim late in a run wastes the model download and the chapters done so
+  far. L40S spot capacity is also unreliable, and running safely on spot
+  needs resumable, per-chapter checkpointing off the instance. Revisit if
+  runs become long (many hours) or frequent; once runs can resume, spot
+  with on-demand fallback is a small addition.
 - **Action for you before Phase 1 needs it:** new AWS accounts usually have
   a **zero quota for GPU instances**. Request an increase of the "Running
   On-Demand G and VT instances" vCPU quota to at least 8 in your chosen
-  region (and the spot equivalent, if you plan to use spot). Approval can
-  take a day or more.
+  region. No spot quota is needed. Approval can take a day or more.
+  (Requested 2026-10-14 in us-east-1 and us-east-2, both with AWS Support.)
 - RunPod or Vast.ai remain fallbacks: per-second billing, no quota process.
 
 **Chapter sample for the 8–14B vs ~70B comparison: 12 chapters, as three
