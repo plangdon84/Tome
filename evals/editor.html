@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Eval Case Editor</title>
+<!--
+  Tome eval case editor. Open this file directly in a browser (no server, no
+  network). Cases are kept in this browser's localStorage and written out as
+  JSON Lines that tome/evals/runner.py:load_cases accepts. See
+  evals/templates/private/README.md for the format.
+-->
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+  --border: #dddcd6; --accent: #2f5fb3; --accent-text: #ffffff;
+  --err: #b3261e; --err-bg: #fbeceb; --warn: #8a5a00; --warn-bg: #fdf4e3;
+  --chip: #eef0f4; --spoil: #b3261e; --cover: #1f7a44; --code: #f1f1ee;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #161615; --panel: #1f1f1d; --text: #e9e8e3; --muted: #9c9b95;
+    --border: #383834; --accent: #7aa2f0; --accent-text: #0f1a2e;
+    --err: #f2867d; --err-bg: #3a1d1b; --warn: #f0c060; --warn-bg: #352a14;
+    --chip: #2b2d33; --spoil: #f2867d; --cover: #6fcf97; --code: #262624;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  padding: 12px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0 auto 0 0; }
+main { display: grid; grid-template-columns: minmax(320px, 440px) 1fr; gap: 16px; padding: 16px; }
+@media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; min-width: 0; }
+h2 { font-size: 14px; margin: 0 0 10px; }
+label { display: block; font-weight: 600; margin: 10px 0 4px; }
+label small, .hint { font-weight: 400; color: var(--muted); }
+.hint { font-size: 12px; margin-top: 3px; }
+input[type=text], input[type=number], textarea, select {
+  width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); font: inherit; }
+textarea { min-height: 64px; resize: vertical; }
+.row { display: flex; gap: 8px; }
+.row > * { flex: 1; min-width: 0; }
+.seg { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg label { flex: 1; margin: 0; padding: 6px; text-align: center; cursor: pointer; font-weight: 600; }
+.seg input { display: none; }
+.seg input:checked + span { color: var(--accent); }
+.seg label:has(input:checked) { background: var(--chip); }
+button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--border);
+  background: var(--panel); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.small { padding: 2px 8px; font-size: 12px; }
+button.danger:hover { border-color: var(--err); color: var(--err); }
+.actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+.msgs { margin-top: 10px; }
+.msg { padding: 6px 8px; border-radius: 6px; margin-top: 4px; font-size: 13px; }
+.msg.err { background: var(--err-bg); color: var(--err); }
+.msg.warn { background: var(--warn-bg); color: var(--warn); }
+.file { margin-bottom: 18px; }
+.file-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px; }
+.file-head h3 { font-size: 14px; margin: 0 auto 0 0; font-family: ui-monospace, monospace; }
+.count { color: var(--muted); font-weight: 400; }
+table { width: 100%; border-collapse: collapse; }
+td { border-top: 1px solid var(--border); padding: 6px 4px; vertical-align: top; }
+td.id { font-family: ui-monospace, monospace; font-size: 12px; white-space: nowrap; }
+td.ops { white-space: nowrap; text-align: right; }
+tr.editing td { background: var(--chip); }
+.kind { font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.kind.spoiler { color: var(--spoil); } .kind.coverage { color: var(--cover); }
+.chip { display: inline-block; background: var(--chip); border-radius: 4px; padding: 0 6px; margin: 2px 4px 0 0; font-size: 12px; }
+.chip.fill { color: var(--warn); background: var(--warn-bg); }
+.q { margin-bottom: 2px; }
+pre { background: var(--code); border: 1px solid var(--border); border-radius: 6px; padding: 8px;
+  overflow-x: auto; font-size: 12px; margin: 6px 0 0; white-space: pre; }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.empty { color: var(--muted); }
+#toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text);
+  color: var(--bg); padding: 8px 14px; border-radius: 6px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+#toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Eval Case Editor</h1>
+  <button id="btn-import">Import .jsonl…</button>
+  <input id="file-input" type="file" accept=".jsonl,.json,.txt" multiple hidden>
+  <button id="btn-save-dir" title="Write every file into a folder you pick, e.g. library/evals/">Save to folder…</button>
+  <button id="btn-download-all">Download all</button>
+  <button id="btn-clear" class="danger">Clear all</button>
+</header>
+
+<main>
+  <section>
+    <h2 id="form-title">New case</h2>
+    <form id="form" autocomplete="off">
+      <div class="seg" role="radiogroup" aria-label="Kind">
+        <label><input type="radio" name="kind" value="spoiler" checked><span>Spoiler</span></label>
+        <label><input type="radio" name="kind" value="coverage"><span>Coverage</span></label>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="series">Series <small>(= pack_id)</small></label>
+          <input id="series" type="text" list="series-list" value="harry-potter">
+          <datalist id="series-list">
+            <option value="harry-potter"><option value="cradle"><option value="oz"><option value="monte-cristo">
+          </datalist>
+        </div>
+        <div>
+          <label for="file">Output file</label>
+          <input id="file" type="text" list="file-list">
+          <datalist id="file-list"></datalist>
+        </div>
+      </div>
+
+      <label for="id">ID <small>(unique across all files)</small></label>
+      <div class="row">
+        <input id="id" type="text" style="flex:3">
+        <button type="button" id="btn-auto-id" style="flex:0 0 auto">Next ID</button>
+      </div>
+
+      <label>Horizon <small>(reader has finished this chapter)</small></label>
+      <div class="row">
+        <div><input id="book" type="number" min="1" step="1" placeholder="Book" aria-label="Book"></div>
+        <div><input id="chapter" type="number" min="0" step="1" placeholder="Chapter" aria-label="Chapter"></div>
+      </div>
+      <div class="hint">Chapter = 1-based order in the parsed book (check with <code>tome parse</code>). 0 = not started the book.</div>
+      <details style="margin-top:6px">
+        <summary>Mid-chapter horizon (fingerprint)</summary>
+        <input id="fingerprint" type="text" placeholder="passage fingerprint (leave empty normally)" style="margin-top:6px">
+        <div class="hint">If set, the horizon is written as an object and means “in that passage, not finished”.</div>
+      </details>
+
+      <label for="question">Question</label>
+      <textarea id="question" rows="2"></textarea>
+
+      <label for="phrases" id="phrases-label">Must not include <small>(one per line)</small></label>
+      <textarea id="phrases" rows="4"></textarea>
+      <div class="hint" id="phrases-hint"></div>
+
+      <div id="subject-wrap">
+        <label for="subject">Subject terms <small>(one per line, optional)</small></label>
+        <textarea id="subject" rows="2"></textarea>
+        <div class="hint">Names for what the question is about, e.g. “Scabbers”.</div>
+      </div>
+
+      <label for="notes">Notes <small>(optional)</small></label>
+      <textarea id="notes" rows="2" placeholder="Where it's revealed, when you asked it…"></textarea>
+
+      <div class="msgs" id="msgs"></div>
+      <div class="actions">
+        <button type="submit" class="primary" id="btn-submit">Add case</button>
+        <button type="button" id="btn-add-next" title="Add, then keep series/file/horizon for the next case">Add &amp; keep horizon</button>
+        <button type="button" id="btn-cancel" hidden>Cancel edit</button>
+        <button type="button" id="btn-reset">Clear form</button>
+      </div>
+    </form>
+  </section>
+
+  <section>
+    <h2>Cases</h2>
+    <div id="global-msgs"></div>
+    <div id="files"></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+"use strict";
+const STORE = "tome-eval-editor-v1";
+const KNOWN = ["id", "series", "horizon", "question", "must_not_include", "expected_facts", "subject_terms", "notes"];
+const PREFIX = { "harry-potter": "hp", "cradle": "cr", "oz": "oz", "monte-cristo": "mc" };
+// Same pattern as tome.horizon.Anchor._SPEC.
+const SPEC = /^\s*b(?:ook)?\s*(\d+)\s*(?:,|\s)\s*ch(?:apter)?\s*(\d+)\s*$/i;
+
+let state = load();
+let editing = null;          // index into state.cases
+let fileTouched = false;     // user typed a file name: stop auto-filling it
+
+const $ = (id) => document.getElementById(id);
+const f = {
+  kind: () => document.querySelector("input[name=kind]:checked").value,
+  series: $("series"), file: $("file"), id: $("id"), book: $("book"), chapter: $("chapter"),
+  fingerprint: $("fingerprint"), question: $("question"), phrases: $("phrases"),
+  subject: $("subject"), notes: $("notes"),
+};
+
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(STORE));
+    if (s && Array.isArray(s.cases)) return { cases: s.cases, comments: s.comments || {} };
+  } catch (e) {}
+  return { cases: [], comments: {} };
+}
+function save() {
+  try { localStorage.setItem(STORE, JSON.stringify(state)); } catch (e) {}
+}
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove("show"), 1800);
+}
+const lines = (s) => s.split("\n").map((x) => x.trim()).filter(Boolean);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function defaultFile(series, kind) { return `${series || "series"}.${kind}.jsonl`; }
+
+// ---------------------------------------------------------------- serialize --
+function toObj(c) {
+  const o = { id: c.id, series: c.series };
+  o.horizon = c.fingerprint
+    ? { book: c.book, chapter: c.chapter, fingerprint: c.fingerprint }
+    : `b${c.book} ch${c.chapter}`;
+  o.question = c.question;
+  o[c.kind === "spoiler" ? "must_not_include" : "expected_facts"] = c.phrases;
+  if (c.kind === "spoiler" && c.subject_terms.length) o.subject_terms = c.subject_terms;
+  if (c.notes) o.notes = c.notes;
+  for (const [k, v] of Object.entries(c.extra || {})) if (!(k in o)) o[k] = v;
+  return o;
+}
+function fileText(name) {
+  const out = (state.comments[name] || []).slice();
+  for (const c of state.cases) if (c.file === name) out.push(JSON.stringify(toObj(c)));
+  return out.join("\n") + "\n";
+}
+function fileNames() {
+  const names = [];
+  for (const c of state.cases) if (!names.includes(c.file)) names.push(c.file);
+  return names;
+}
+
+// ---------------------------------------------------------------- validate --
+function fileProblems(name) {
+  const errs = [], warns = [];
+  if (!name) errs.push("Output file name is required.");
+  else {
+    if (!name.endsWith(".jsonl")) errs.push("File name must end in .jsonl or the runner won't load it.");
+    if (name.startsWith("_") || name.includes(".template.")) errs.push("The runner skips files starting with “_” or containing “.template.”.");
+    if (/[\\/]/.test(name)) errs.push("Use a bare file name, no folders.");
+  }
+  return { errs, warns };
+}
+function validate(c, selfIndex) {
+  const { errs, warns } = fileProblems(c.file);
+  if (!c.id) errs.push("ID is required.");
+  else if (state.cases.some((o, i) => i !== selfIndex && o.id === c.id)) errs.push(`Duplicate ID “${c.id}”: the whole eval run would stop.`);
+  if (!c.series) errs.push("Series is required.");
+  else if (!(c.series in PREFIX)) warns.push(`Series “${c.series}” must equal the pack's pack_id exactly, or the case is skipped.`);
+  if (!Number.isInteger(c.book) || c.book < 1) errs.push("Book must be a whole number ≥ 1.");
+  if (!Number.isInteger(c.chapter) || c.chapter < 0) errs.push("Chapter must be a whole number ≥ 0.");
+  if (!c.question) errs.push("Question is required.");
+  const what = c.kind === "spoiler" ? "must-not-include phrase" : "expected fact";
+  if (!c.phrases.length) errs.push(`Add at least one ${what}.`);
+  for (const p of c.phrases) {
+    if (p.split("|").some((a) => !a.trim())) warns.push(`“${p}” has an empty alternative around “|”.`);
+    if (p.length > 60) warns.push(`“${p.slice(0, 30)}…” is long. Use short phrases, never passages of book text.`);
+  }
+  if ([...c.phrases, c.question].some((s) => /FILL ME IN/i.test(s))) warns.push("Still contains a FILL ME IN placeholder: it will always score as a miss.");
+  if (c.kind === "spoiler" && !c.subject_terms.length) warns.push("No subject terms. They're optional, but they will be used to check the case against the text.");
+  if (c.kind === "spoiler" && c.phrases.some((p) => p.split("|").some((a) => a.trim().split(/\s+/).length === 1 && a.trim().length <= 3)))
+    warns.push("Very short phrases (≤3 letters) match as whole words and may cause false leaks.");
+  return { errs, warns };
+}
+
+// ---------------------------------------------------------------- form --
+function readForm() {
+  const num = (el) => (el.value.trim() === "" ? NaN : Number(el.value));
+  const kind = f.kind();
+  const c = {
+    kind, series: f.series.value.trim(), file: f.file.value.trim(), id: f.id.value.trim(),
+    book: num(f.book), chapter: num(f.chapter), fingerprint: f.fingerprint.value.trim(),
+    question: f.question.value.trim(), phrases: lines(f.phrases.value),
+    subject_terms: kind === "spoiler" ? lines(f.subject.value) : [], notes: f.notes.value.trim(),
+  };
+  if (editing !== null) c.extra = state.cases[editing].extra;
+  return c;
+}
+function fillForm(c) {
+  document.querySelector(`input[name=kind][value=${c.kind}]`).checked = true;
+  f.series.value = c.series; f.file.value = c.file; f.id.value = c.id;
+  f.book.value = Number.isFinite(c.book) ? c.book : ""; f.chapter.value = Number.isFinite(c.chapter) ? c.chapter : "";
+  f.fingerprint.value = c.fingerprint || ""; f.question.value = c.question;
+  f.phrases.value = c.phrases.join("\n"); f.subject.value = (c.subject_terms || []).join("\n");
+  f.notes.value = c.notes || "";
+  fileTouched = c.file !== defaultFile(c.series, c.kind);
+  syncKind(); showMsgs();
+}
+function resetForm(keep) {
+  const prev = readForm();
+  editing = null;
+  $("form").reset();
+  fileTouched = false;
+  if (keep) {
+    document.querySelector(`input[name=kind][value=${prev.kind}]`).checked = true;
+    f.series.value = prev.series; f.file.value = prev.file;
+    f.book.value = Number.isFinite(prev.book) ? prev.book : "";
+    f.chapter.value = Number.isFinite(prev.chapter) ? prev.chapter : "";
+    fileTouched = prev.file !== defaultFile(prev.series, prev.kind);
+  }
+  syncKind(); f.id.value = nextId(); showMsgs(); render();
+  (keep ? f.question : f.series).focus();
+}
+function syncKind() {
+  const spoiler = f.kind() === "spoiler";
+  $("phrases-label").innerHTML = (spoiler ? "Must not include" : "Expected facts") + " <small>(one per line)</small>";
+  $("phrases-hint").innerHTML = spoiler
+    ? "Phrases that would reveal something after the horizon. Case- and accent-insensitive, whole words. Pick ones that can't appear legitimately before the horizon. <code>a|b</code> = either."
+    : "Facts a good answer must contain. <code>a|b</code> = alternative wordings.";
+  $("subject-wrap").hidden = !spoiler;
+  if (!fileTouched) f.file.value = defaultFile(f.series.value.trim(), f.kind());
+  $("form-title").textContent = editing === null ? "New case" : `Editing ${state.cases[editing].id}`;
+  $("btn-submit").textContent = editing === null ? "Add case" : "Save changes";
+  $("btn-add-next").hidden = editing !== null;
+  $("btn-cancel").hidden = editing === null;
+}
+function nextId() {
+  const series = f.series.value.trim();
+  const pre = (PREFIX[series] || series.split("-").map((w) => w[0] || "").join("") || "x") + "-" + (f.kind() === "spoiler" ? "s" : "c");
+  let n = 0;
+  for (const c of state.cases) {
+    const m = c.id.match(new RegExp("^" + pre.replace(/[-]/g, "\\-") + "(\\d+)"));
+    if (m) n = Math.max(n, Number(m[1]));
+  }
+  return pre + String(n + 1).padStart(2, "0");
+}
+function showMsgs(withErrors) {
+  const { errs, warns } = validate(readForm(), editing);
+  $("msgs").innerHTML =
+    (withErrors ? errs.map((e) => `<div class="msg err">${esc(e)}</div>`).join("") : "") +
+    warns.map((w) => `<div class="msg warn">${esc(w)}</div>`).join("");
+  return errs;
+}
+function submit(keep) {
+  const c = readForm();
+  if (showMsgs(true).length) return;
+  if (editing !== null) { state.cases[editing] = c; toast(`Updated ${c.id}`); }
+  else { state.cases.push(c); toast(`Added ${c.id}`); }
+  save(); resetForm(keep);
+}
+
+// ---------------------------------------------------------------- list --
+function render() {
+  const names = fileNames();
+  $("file-list").innerHTML = [...new Set([...names, "harry-potter.spoiler.jsonl", "cradle.coverage.jsonl", "reading-notes.coverage.jsonl"])]
+    .map((n) => `<option value="${esc(n)}">`).join("");
+  const ids = {};
+  state.cases.forEach((c) => (ids[c.id] = (ids[c.id] || 0) + 1));
+  const dups = Object.keys(ids).filter((k) => ids[k] > 1);
+  $("global-msgs").innerHTML = dups.length ? `<div class="msg err">Duplicate IDs: ${esc(dups.join(", "))}</div>` : "";
+  if (!names.length) { $("files").innerHTML = `<p class="empty">No cases yet. Add one, or import your existing files from <code>library/evals/</code>.</p>`; return; }
+  $("files").innerHTML = names.map((name) => {
+    const rows = state.cases.map((c, i) => [c, i]).filter(([c]) => c.file === name);
+    const nS = rows.filter(([c]) => c.kind === "spoiler").length;
+    const fp = fileProblems(name).errs;
+    return `<div class="file">
+      <div class="file-head"><h3>${esc(name)} <span class="count">· ${rows.length} case${rows.length === 1 ? "" : "s"}${nS && nS < rows.length ? ` (${nS} spoiler)` : ""}</span></h3>
+        <button class="small" data-copy="${esc(name)}">Copy</button>
+        <button class="small" data-dl="${esc(name)}">Download</button></div>
+      ${fp.map((e) => `<div class="msg err">${esc(e)}</div>`).join("")}
+      <table>${rows.map(([c, i]) => {
+        const bad = validate(c, i).errs.length;
+        return `<tr class="${i === editing ? "editing" : ""}">
+        <td class="id"><span class="kind ${c.kind}">${c.kind}</span><br>${esc(c.id)}<br>b${c.book} ch${c.chapter}${c.fingerprint ? " @…" : ""}${bad ? `<br><span class="kind spoiler">invalid</span>` : ""}</td>
+        <td><div class="q">${esc(c.question)}</div>${c.phrases.map((p) => `<span class="chip${/FILL ME IN/i.test(p) ? " fill" : ""}">${esc(p)}</span>`).join("")}</td>
+        <td class="ops"><button class="small" data-edit="${i}">Edit</button> <button class="small" data-dupe="${i}" title="Copy into a new case">Clone</button> <button class="small danger" data-del="${i}">Delete</button></td></tr>`;
+      }).join("")}</table>
+      <details><summary>Preview file</summary><pre>${esc(fileText(name))}</pre></details>
+    </div>`;
+  }).join("");
+}
+
+$("files").addEventListener("click", async (e) => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.edit) { editing = Number(b.dataset.edit); fillForm(state.cases[editing]); render(); f.question.focus(); }
+  if (b.dataset.dupe) { const c = structuredClone(state.cases[Number(b.dataset.dupe)]); editing = null; fillForm(c); f.id.value = nextId(); syncKind(); render(); f.question.focus(); }
+  if (b.dataset.del) {
+    const i = Number(b.dataset.del);
+    if (!confirm(`Delete ${state.cases[i].id}?`)) return;
+    state.cases.splice(i, 1);
+    if (editing === i) resetForm(false); else if (editing !== null && editing > i) editing--;
+    save(); render();
+  }
+  if (b.dataset.copy) { await navigator.clipboard.writeText(fileText(b.dataset.copy)); toast("Copied " + b.dataset.copy); }
+  if (b.dataset.dl) download(b.dataset.dl);
+});
+
+// ---------------------------------------------------------------- import / export --
+function download(name) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([fileText(name)], { type: "application/jsonl" }));
+  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function blockingErrors() {
+  const bad = state.cases.filter((c, i) => validate(c, i).errs.length).map((c) => c.id || "(no id)");
+  const badFiles = fileNames().filter((n) => fileProblems(n).errs.length);
+  if (!bad.length && !badFiles.length) return false;
+  return !confirm(`Some cases have errors (${[...bad, ...badFiles].join(", ")}). The runner will reject them. Write anyway?`);
+}
+$("btn-download-all").onclick = () => {
+  if (!state.cases.length) return toast("Nothing to download");
+  if (blockingErrors()) return;
+  fileNames().forEach((n, k) => setTimeout(() => download(n), k * 300));
+};
+$("btn-save-dir").onclick = async () => {
+  if (!window.showDirectoryPicker) return alert("This browser can't write to folders (use Chrome or Edge), so use “Download all” and move the files into library/evals/ instead.");
+  if (!state.cases.length) return toast("Nothing to save");
+  if (blockingErrors()) return;
+  const names = fileNames();
+  if (!confirm(`This overwrites these files in the folder you pick:\n\n${names.join("\n")}\n\nImport the existing files first if you haven't, or their cases will be lost.`)) return;
+  try {
+    const dir = await window.showDirectoryPicker({ mode: "readwrite" });
+    for (const n of names) {
+      const w = await (await dir.getFileHandle(n, { create: true })).createWritable();
+      await w.write(fileText(n)); await w.close();
+    }
+    toast(`Wrote ${names.length} file${names.length === 1 ? "" : "s"} to ${dir.name}/`);
+  } catch (err) { if (err.name !== "AbortError") alert("Save failed: " + err.message); }
+};
+$("btn-import").onclick = () => $("file-input").click();
+$("file-input").onchange = async (e) => {
+  const report = [];
+  for (const file of e.target.files) {
+    const name = file.name.replace(".template.", ".");
+    const replace = state.cases.some((c) => c.file === name) &&
+      confirm(`You already have cases in ${name}. Replace them with the imported file? (Cancel = add to them)`);
+    if (replace) state.cases = state.cases.filter((c) => c.file !== name);
+    const comments = [], added = [], errors = [];
+    (await file.text()).split(/\r?\n/).forEach((raw, k) => {
+      const line = raw.trim();
+      if (!line) return;
+      if (line.startsWith("//")) { if (replace || !state.comments[name]) comments.push(line); return; }
+      try { added.push(fromObj(JSON.parse(line), name)); }
+      catch (err) { errors.push(`${name}:${k + 1}: ${err.message}`); }
+    });
+    if (comments.length) state.comments[name] = comments;
+    state.cases.push(...added);
+    report.push(`${name}: ${added.length} case${added.length === 1 ? "" : "s"} imported${errors.length ? `, ${errors.length} line(s) skipped:\n  ${errors.join("\n  ")}` : ""}`);
+  }
+  e.target.value = ""; save(); render(); f.id.value = editing === null ? nextId() : f.id.value;
+  alert(report.join("\n\n"));
+};
+function fromObj(o, file) {
+  let kind, phrases;
+  if ("must_not_include" in o) { kind = "spoiler"; phrases = o.must_not_include; }
+  else if ("expected_facts" in o) { kind = "coverage"; phrases = o.expected_facts; }
+  else throw new Error("needs must_not_include or expected_facts");
+  if (!Array.isArray(phrases)) throw new Error("phrases must be a list");
+  let book, chapter, fingerprint = "";
+  if (typeof o.horizon === "string") {
+    const m = o.horizon.match(SPEC);
+    if (!m) throw new Error(`bad horizon ${JSON.stringify(o.horizon)}`);
+    book = Number(m[1]); chapter = Number(m[2]);
+  } else if (o.horizon && typeof o.horizon === "object" && "book" in o.horizon && "chapter" in o.horizon) {
+    book = Number(o.horizon.book); chapter = Number(o.horizon.chapter); fingerprint = o.horizon.fingerprint || "";
+  } else throw new Error("missing or bad horizon");
+  const extra = {};
+  for (const [k, v] of Object.entries(o)) if (!KNOWN.includes(k)) extra[k] = v;
+  return {
+    kind, file, id: String(o.id ?? ""), series: String(o.series ?? ""), book, chapter, fingerprint,
+    question: String(o.question ?? ""), phrases: phrases.map(String),
+    subject_terms: kind === "spoiler" ? (o.subject_terms || []).map(String) : [],
+    notes: String(o.notes ?? ""), extra,
+  };
+}
+$("btn-clear").onclick = () => {
+  if (!state.cases.length || !confirm(`Delete all ${state.cases.length} cases from this editor? Files already saved to disk are not touched.`)) return;
+  state = { cases: [], comments: {} }; save(); resetForm(false);
+};
+
+// ---------------------------------------------------------------- wiring --
+$("form").addEventListener("submit", (e) => { e.preventDefault(); submit(false); });
+$("btn-add-next").onclick = () => submit(true);
+$("btn-cancel").onclick = () => resetForm(false);
+$("btn-reset").onclick = () => resetForm(false);
+$("btn-auto-id").onclick = () => { f.id.value = nextId(); showMsgs(); };
+f.file.addEventListener("input", () => { fileTouched = f.file.value.trim() !== ""; });
+document.querySelectorAll("input[name=kind]").forEach((r) => r.addEventListener("change", () => {
+  if (editing === null) f.id.value = nextId();
+  syncKind(); showMsgs();
+}));
+f.series.addEventListener("change", () => { if (editing === null) f.id.value = nextId(); syncKind(); showMsgs(); });
+$("form").addEventListener("input", () => showMsgs());
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); submit(e.shiftKey); }
+});
+
+syncKind(); f.id.value = nextId(); render(); showMsgs();
+</script>
+</body>
+</html>

@@ -14,6 +14,11 @@ Then edit the copies and run them against a pack you compiled on the GPU pod:
 uv run tome eval run --pack library/packs/harry-potter.tome --cases library/evals/
 ```
 
+To write cases in a form instead of by hand, open `evals/editor.html` in a
+browser (`open evals/editor.html` on a Mac). It works offline, checks each case
+the way the runner does, and writes these files. Import your existing files
+first so saving doesn't replace them.
+
 ## Format
 
 JSON Lines, one case per line. Lines starting with `//` are comments.
