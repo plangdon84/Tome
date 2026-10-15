@@ -86,6 +86,22 @@ quote-check pass rate. The stub plants two bad quotes and one unstated
 reveal on purpose, and a
 meta-test confirms that an answerer which ignores the horizon is caught.*
 
+## Pre-Phase 1: Your setup (status 2026-10-14)
+
+The things only you can do before Phase 1 runs on real books.
+
+- [x] Mac set up ([MAC_SETUP.md](MAC_SETUP.md)), with the AWS command line
+  and Claude Code installed.
+- [x] GPU quota increase requested on AWS (DECISIONS.md §12). *A support case
+  is open; waiting for approval.*
+- [x] Parse test on the *Harry Potter* omnibus. *`split = "toc"` gives 7 books
+  with the right chapter counts (17, 18, 22, 37, 38, 30, 36 + epilogue);
+  3,974 passages and 1,090,408 words, the same totals as the one-book parse.
+  The only warning is an empty `Pottermore.com` page, which is skipped.*
+- [x] *Cradle* books 1–3 (*Unsouled*, *Soulsmith*, *Blackflame*) are in
+  `library/` as EPUBs.
+- [ ] Private spoiler eval cases (`library/evals/`). *In progress.*
+
 ## Phase 1: Parse, search, and summaries (≈2 weeks)
 
 **EPUB → passages → keyword + meaning search → rolling summaries.** This is
@@ -96,7 +112,7 @@ this?" questions.
   - Spine order.
   - **Splitting an omnibus into its books**, from the nested TOC, with a
     manual override file. *(Layout TOML: `split = "toc"` or `"manual"`;
-    still to be tried on the real HP omnibus.)*
+    confirmed on the real HP omnibus.)*
   - Chapter detection.
   - Stripping front and back matter.
   - Splitting chapters into passages of about 150–400 words, each with a
