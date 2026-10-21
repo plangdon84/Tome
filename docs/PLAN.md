@@ -86,21 +86,30 @@ quote-check pass rate. The stub plants two bad quotes and one unstated
 reveal on purpose, and a
 meta-test confirms that an answerer which ignores the horizon is caught.*
 
-## Pre-Phase 1: Your setup (status 2026-10-14)
+## Pre-Phase 1: Your setup (status 2026-10-21)
 
-The things only you can do before Phase 1 runs on real books.
+The things only you can do before Phase 1 runs on real books. Phase 1 can
+start now: the open items below are eval cases, which keep being written
+alongside it.
 
 - [x] Mac set up ([MAC_SETUP.md](MAC_SETUP.md)), with the AWS command line
   and Claude Code installed.
-- [x] GPU quota increase requested on AWS (DECISIONS.md §12). *A support case
-  is open; waiting for approval.*
+- [x] GPU quota increase on AWS (DECISIONS.md §12). *Approved.*
 - [x] Parse test on the *Harry Potter* omnibus. *`split = "toc"` gives 7 books
   with the right chapter counts (17, 18, 22, 37, 38, 30, 36 + epilogue);
   3,974 passages and 1,090,408 words, the same totals as the one-book parse.
   The only warning is an empty `Pottermore.com` page, which is skipped.*
 - [x] *Cradle* books 1–3 (*Unsouled*, *Soulsmith*, *Blackflame*) are in
   `library/` as EPUBs.
-- [ ] Private spoiler eval cases (`library/evals/`). *In progress.*
+- [x] First pass of private *Harry Potter* eval cases (`library/evals/`).
+  *11 spoiler and 14 coverage cases, all passing `tome eval check` against a
+  parse-only pack. On that pack the baseline answerer leaks 0/11 and scores
+  38.5% coverage: a text-only starting point, since there is no compiler yet.*
+- [x] *Harry Potter* series config (`library/series/harry-potter.toml`):
+  copyrighted, `vllm-local` only.
+- [ ] More *Harry Potter* spoiler cases, up to about 30.
+- [ ] *Cradle* eval cases and a first run: build a parse-only pack from books
+  1–3, then `tome eval check` and `tome eval run`.
 
 ## Phase 1: Parse, search, and summaries (≈2 weeks)
 

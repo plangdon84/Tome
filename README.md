@@ -45,6 +45,8 @@ uv run tome search "Sinbad" --pack data/monte-cristo.tome --at "b1 ch31"
 uv run tome eval run --stub              # evals end to end on the stub pack
 uv run tome eval run --pack data/monte-cristo.tome
 uv run tome eval init-private            # private eval templates -> library/evals/
+uv run tome eval check --pack data/monte-cristo.tome \
+    --cases evals/public/monte-cristo   # cases vs the real text
 uv run tome llm smoke                    # one cheap call via OpenRouter
 ```
 

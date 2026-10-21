@@ -264,6 +264,62 @@ def run_eval(
     return EvalReport(pack_id, results["spoiler"], results["coverage"], quote_report(pack), skipped)
 
 
+@dataclass
+class CheckReport:
+    pack_id: str
+    checked: int
+    skipped: list[str]
+    problems: list[str]  # "<source>: <id>: <message>"
+
+
+def check_cases(pack: str | Path, cases: list[Case], *, series: str | None = None) -> CheckReport:
+    """Check cases against the pack's own text, before trusting their scores.
+
+    - A spoiler phrase must not appear at or before the horizon. With
+      ``subject_terms``, only passages mentioning the subject count.
+    - At least one spoiler phrase must appear after the horizon (a real later fact).
+    - Every coverage fact must appear at or before the horizon, word for word.
+    - The horizon must name a chapter that exists (no rounding back).
+    """
+    with HorizonReader(pack, 0) as r:
+        pack_id = r.manifest().get("pack_id", "")
+    series = series or pack_id
+    # Validation reads the whole book on purpose: it needs the text past each horizon.
+    with HorizonReader(pack, _max_pos(pack)) as r:
+        passages = [(p["pos"], p["text"]) for p in r.query("SELECT pos, text FROM h_passages")]
+    checked, skipped, problems = 0, [], []
+    for case in cases:
+        if case.series != series:
+            skipped.append(case.id)
+            continue
+        checked += 1
+
+        def problem(msg: str, case=case):
+            problems.append(f"{case.source}: {case.id}: {msg}")
+
+        res = resolve_anchor(pack, case.anchor)
+        if not res.exact:
+            problem(f"horizon {case.anchor} does not exist; rounded back to pos {res.pos}")
+        before = [t for pos, t in passages if pos <= res.pos]
+        if case.kind == "spoiler":
+            if case.subject_terms:
+                before = [
+                    t for t in before if any(contains_phrase(t, s) for s in case.subject_terms)
+                ]
+            for phrase in case.phrases:
+                early = next((t for t in before if contains_phrase(t, phrase)), None)
+                if early is not None:
+                    problem(f"{phrase!r} already appears by the horizon: {early[:100]!r}")
+            after = [t for pos, t in passages if pos > res.pos]
+            if not any(contains_phrase(t, p) for p in case.phrases for t in after):
+                problem("no phrase appears after the horizon, so the case cannot catch a leak")
+        else:
+            for fact in case.phrases:
+                if not any(contains_phrase(t, fact) for t in before):
+                    problem(f"{fact!r} does not appear in the text by the horizon")
+    return CheckReport(pack_id, checked, skipped, problems)
+
+
 def format_report(report: EvalReport, *, verbose: bool = False) -> str:
     def pct(x):
         return "n/a" if x is None else f"{100 * x:.1f}%"
