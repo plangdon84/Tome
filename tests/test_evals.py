@@ -7,6 +7,7 @@ from tome.answer import answer
 from tome.epub.parse import Layout, parse_epub
 from tome.evals.runner import (
     CaseError,
+    check_cases,
     contains_phrase,
     format_report,
     load_cases,
@@ -92,6 +93,55 @@ def test_bad_cases_are_rejected(tmp_path, line, err):
     f.write_text(line + "\n")
     with pytest.raises((CaseError, ValueError), match=err):
         load_cases(f)
+
+
+def _cases(tmp_path, *lines):
+    f = tmp_path / "cases.jsonl"
+    f.write_text(
+        "\n".join(json.dumps({"series": "monte-cristo", "question": "q", **x}) for x in lines)
+    )
+    return load_cases(f)
+
+
+def test_check_passes_well_formed_cases(stub_pack, tmp_path):
+    cases = _cases(
+        tmp_path,
+        {
+            "id": "s",
+            "horizon": "b1 ch28",
+            "must_not_include": ["Sinbad"],
+            "subject_terms": ["Morrel"],
+        },
+        {"id": "c", "horizon": "b1 ch20", "expected_facts": ["Faria"]},
+        {"id": "x", "series": "cradle", "horizon": "b1 ch1", "expected_facts": ["y"]},
+    )
+    report = check_cases(stub_pack, cases)
+    assert report.problems == [] and report.checked == 2 and report.skipped == ["x"]
+
+
+def test_check_flags_bad_cases(stub_pack, tmp_path):
+    cases = _cases(
+        tmp_path,
+        # Sinbad signs the note to Morrel in ch29, so it is already known at ch30.
+        {
+            "id": "known",
+            "horizon": "b1 ch30",
+            "must_not_include": ["Sinbad"],
+            "subject_terms": ["Morrel"],
+        },
+        {"id": "never", "horizon": "b1 ch1", "must_not_include": ["Hogwarts"]},
+        {"id": "early", "horizon": "b1 ch10", "expected_facts": ["Faria"]},
+        {"id": "nochapter", "horizon": "b1 ch999", "expected_facts": ["Dantès"]},
+    )
+    problems = check_cases(stub_pack, cases).problems
+    assert len(problems) == 4
+    for case_id, text in [
+        ("known", "already appears"),
+        ("never", "no phrase appears after"),
+        ("early", "does not appear"),
+        ("nochapter", "does not exist"),
+    ]:
+        assert any(f": {case_id}: " in p and text in p for p in problems), (case_id, problems)
 
 
 def test_phrase_matching():

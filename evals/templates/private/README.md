@@ -19,6 +19,18 @@ browser (`open evals/editor.html` on a Mac). It works offline, checks each case
 the way the runner does, and writes these files. Import your existing files
 first so saving doesn't replace them.
 
+Before trusting the scores, check new or edited cases against the book text.
+It needs only a parse-only pack (`tome pack build-text`), not a compiled one:
+
+```sh
+uv run tome eval check --pack data/harry-potter.tome --cases library/evals/
+```
+
+It flags spoiler phrases that already appear by the horizon (next to the
+subject, if `subject_terms` is set), spoiler cases none of whose phrases ever
+appear later, coverage facts not in the text word for word by the horizon,
+and horizons that name a chapter that doesn't exist.
+
 ## Format
 
 JSON Lines, one case per line. Lines starting with `//` are comments.

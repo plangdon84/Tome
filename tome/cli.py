@@ -227,6 +227,27 @@ def eval_run(
         raise typer.Exit(1)
 
 
+@eval_app.command("check")
+def eval_check(
+    pack: Path = typer.Option(..., help="Pack whose text the cases are checked against."),
+    cases: list[Path] = typer.Option([Path("library/evals")], help="Case files or directories."),
+):
+    """Check cases against the pack's text: spoilers unknowable, facts knowable at the horizon."""
+    from tome.evals.runner import check_cases, load_cases
+
+    loaded = [c for path in cases for c in load_cases(path)]
+    report = check_cases(pack, loaded)
+    for line in report.problems:
+        typer.echo(line)
+    skipped = f", {len(report.skipped)} skipped (other series)" if report.skipped else ""
+    typer.echo(
+        f"Checked {report.checked} case(s) against '{report.pack_id}'{skipped}: "
+        f"{len(report.problems)} problem(s)"
+    )
+    if report.problems:
+        raise typer.Exit(1)
+
+
 @eval_app.command("init-private")
 def eval_init_private(dest: Path = typer.Option(Path("library/evals"))):
     """Copy the private eval templates into library/evals/ (gitignored)."""
