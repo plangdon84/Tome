@@ -133,7 +133,11 @@ this?" questions.
   - `tome search --at "b3 ch10" "scabbers"` *(exists: keyword search, horizon-filtered)*
   - `tome recap --at "b2 ch1"`
 - [ ] GPU pod runner script: upload, start vLLM, ingest, download the SQLite
-  file, destroy the pod.
+  file, destroy the pod. *(Drafted: `scripts/gpu_pod.py`, using EC2 `g6e.xlarge`
+  with a self-terminate timer and SSH open to one IP only. Smoke test blocked
+  2026-10-22: every zone in us-east-1 and us-east-2 returned
+  InsufficientInstanceCapacity for g6e/g6.xlarge; AWS Support case
+  179270307500931 is open. `up`/`down` cleanup is verified; `setup` is not.)*
 - [ ] Compare open-model sizes (about 8–14B vs about 70B) for summary quality
   on 12 chapters (three windows of 4 consecutive chapters), in two stages:
   automated on public domain via OpenRouter, then judged by you on
