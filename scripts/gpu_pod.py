@@ -410,7 +410,8 @@ def cmd_setup(args: argparse.Namespace) -> None:
             "export PATH=$HOME/.local/bin:$PATH; "
             "uv sync --frozen --python 3.12 && "
             f"(test -x ~/vllm/bin/vllm || (uv venv --python 3.12 ~/vllm && "
-            f"VIRTUAL_ENV=~/vllm uv pip install vllm=={VLLM_VERSION})) && "
+            # vLLM 0.11 calls a tokenizer attribute that transformers 5 removed.
+            f"VIRTUAL_ENV=~/vllm uv pip install vllm=={VLLM_VERSION} 'transformers<5')) && "
             "nvidia-smi --query-gpu=name,memory.total --format=csv"
         ),
     )
