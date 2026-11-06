@@ -408,7 +408,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
         (
             "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; "
             "export PATH=$HOME/.local/bin:$PATH; "
-            "uv sync --frozen && "
+            "uv sync --frozen --python 3.12 && "
             f"(test -x ~/vllm/bin/vllm || (uv venv --python 3.12 ~/vllm && "
             f"VIRTUAL_ENV=~/vllm uv pip install vllm=={VLLM_VERSION})) && "
             "nvidia-smi --query-gpu=name,memory.total --format=csv"
