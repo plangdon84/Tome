@@ -101,23 +101,11 @@ def pack_build_text(
 
     results = [(e, parse_epub(e, Layout.for_epub(e, layout))) for e in epubs]
     w = PackWriter(out, pack_id=series, series_title=title or results[0][1].title, overwrite=force)
-    number = _add_books(w, results)
+    number = w.add_parsed(results)
     embedding_model_id = _embed_passages(w) if embed else None
     content_hash = w.finalize(embedding_model_id=embedding_model_id)
     w.close()
     typer.echo(f"wrote {out} ({number} book(s), content hash {content_hash[:12]})")
-
-
-def _add_books(w, results) -> int:
-    """Add parsed EPUBs in reading order. Returns the number of books."""
-    run = w.start_run("parse", params={"epubs": [e.name for e, _ in results]})
-    number = 0
-    for epub, result in results:
-        for book in result.book_texts(source_file=epub.name):
-            number += 1
-            w.add_book(number, book)
-    w.finish_run(run, stats={"books": number})
-    return number
 
 
 def _embed_passages(w) -> str:
@@ -174,7 +162,7 @@ def ingest(
     # A failed run never leaves something that looks like a finished pack at --out.
     partial = out.with_name(out.name + ".partial")
     w = PackWriter(partial, pack_id=series_cfg.id, series_title=series_cfg.title, overwrite=True)
-    number = _add_books(w, results)
+    number = w.add_parsed(results)
     stats = summarize_pack(
         w,
         client,
@@ -199,6 +187,11 @@ def ingest(
     )
     for where, names in stats.unseen_names.items():
         typer.echo(f"warning: {where} uses names not in the text yet: {', '.join(names)}", err=True)
+    for where, flagged in stats.unsupported.items():
+        for sentence in flagged:
+            typer.echo(f"check: {where} may not be supported: “{sentence}”", err=True)
+    if stats.rollup_check_errors:
+        typer.echo(f"warning: {stats.rollup_check_errors} rollup checks failed", err=True)
     if stats.truncated or stats.rollups_skipped:
         typer.echo(
             f"warning: {stats.truncated} replies hit the token limit; "
@@ -358,6 +351,52 @@ def eval_init_private(dest: Path = typer.Option(Path("library/evals"))):
             continue
         shutil.copy(f, target)
         typer.echo(f"created {target}")
+
+
+# ----------------------------------------------------------------- compare --
+
+
+@app.command()
+def compare(
+    out: Path = typer.Option(Path("data/compare/stage-a"), help="Output directory."),
+    target: list[str] = typer.Option(["oz"], help="Public-domain targets: oz, monte-cristo."),
+    model: list[str] = typer.Option(None, help="Models to compare (default: 7B and 72B Qwen)."),
+    judge: str | None = typer.Option(None, help="Support-check judge model."),
+    provider: str = typer.Option("openrouter", help="Provider for every model and the judge."),
+    max_chapters: int | None = typer.Option(None, help="Stop each pack early, for a trial."),
+):
+    """Model comparison, Stage A: summary packs per model, scored by evals and a judge.
+
+    Packs and judgments already in --out are reused, so a rerun only pays for what
+    is missing. Writes results.json and report.md there.
+    """
+    from tome.compare import JUDGE_MODEL, LARGE_MODEL, SMALL_MODEL, TARGETS, run_comparison
+    from tome.llm.client import ChatClient
+    from tome.llm.providers import get_provider
+
+    for t in target:
+        if t not in TARGETS:
+            raise typer.BadParameter(f"unknown target {t!r}; known: {sorted(TARGETS)}")
+        missing = [e for e in TARGETS[t].epubs if not Path(e).exists()]
+        if missing:
+            raise typer.BadParameter(f"missing {missing}; run `tome corpus fetch`")
+    preset = get_provider(provider)
+    scores = run_comparison(
+        out,
+        targets=target,
+        models=model or [SMALL_MODEL, LARGE_MODEL],
+        judge_model=judge or JUDGE_MODEL,
+        make_client=lambda series, m: ChatClient(preset, series, model=m, timeout=600.0),
+        max_chapters=max_chapters,
+        log=lambda msg: typer.echo(msg, err=True),
+    )
+    for s in scores:
+        typer.echo(
+            f"{s.target} {s.model}: leaks {s.leaks}/{s.spoiler_cases}, "
+            f"coverage {s.coverage_full}/{s.coverage_cases} full, support "
+            f"{'n/a' if s.support_rate() is None else f'{100 * s.support_rate():.1f}%'}"
+        )
+    typer.echo(f"report: {out / 'report.md'}")
 
 
 # --------------------------------------------------------------------- llm --

@@ -135,6 +135,21 @@ def recap_pieces(reader: HorizonReader) -> list[Piece]:
     return pieces
 
 
+def search_fallback(reader: HorizonReader, question: str, *, limit: int) -> list:
+    """Passages that hold every content word of the question, else any of them.
+
+    Matching any one word lets a common word pull in passages about someone
+    else: "Who is Sinbad the Sailor?" would show passages about Dantès, a
+    sailor, which is the identity the text hasn't stated yet.
+    """
+    terms = [w for w in words(question) if w not in STOPWORDS]
+    if len(terms) > 1:
+        hits = reader.search_passages(" ".join(terms), limit=limit, match_all=True)
+        if hits:
+            return hits
+    return reader.search_passages(question, limit=limit)
+
+
 def answer(reader: HorizonReader, question: str, *, max_passages: int = 3) -> Answer:
     pieces: list[Piece] = []
     speculative = is_speculative(question)
@@ -165,7 +180,7 @@ def answer(reader: HorizonReader, question: str, *, max_passages: int = 3) -> An
             pieces.append(Piece("anticipated_qa", qa["answer"], qa["max_source_pos"], cited_pos))
 
     if not pieces:
-        for p in reader.search_passages(question, limit=max_passages):
+        for p in search_fallback(reader, question, limit=max_passages):
             pieces.append(Piece("passage", p["text"], p["pos"], [p["pos"]]))
 
     return Answer(question, reader.horizon, [fold(s) for s, _ in matched], pieces)

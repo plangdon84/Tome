@@ -307,9 +307,14 @@ class HorizonReader:
     def passage(self, passage_id: int) -> sqlite3.Row | None:
         return self.one("SELECT * FROM h_passages WHERE passage_id = ?", (passage_id,))
 
-    def search_passages(self, text: str, limit: int = 10) -> list[sqlite3.Row]:
-        """Keyword search over passages at or before the horizon (FTS5, bm25)."""
-        q = fts_query(text)
+    def search_passages(
+        self, text: str, limit: int = 10, *, match_all: bool = False
+    ) -> list[sqlite3.Row]:
+        """Keyword search over passages at or before the horizon (FTS5, bm25).
+
+        By default a passage needs any one of the words; with ``match_all``, every one.
+        """
+        q = fts_query(text, op="AND" if match_all else "OR")
         if not q:
             return []
         # MATERIALIZED keeps the FTS view from being flattened into the join,
@@ -414,7 +419,7 @@ class HorizonReader:
         return self.query("SELECT * FROM h_anticipated_qa ORDER BY max_source_pos")
 
 
-def fts_query(text: str) -> str:
-    """Turn free text into a safe FTS5 query (OR of quoted terms)."""
+def fts_query(text: str, op: str = "OR") -> str:
+    """Turn free text into a safe FTS5 query (quoted terms joined by ``op``)."""
     terms = [w for w in words(text) if len(w) > 1]
-    return " OR ".join(f'"{t}"' for t in dict.fromkeys(terms))
+    return f" {op} ".join(f'"{t}"' for t in dict.fromkeys(terms))

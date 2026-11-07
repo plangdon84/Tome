@@ -11,6 +11,7 @@ tell the model to ignore anything it remembers about the book.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
@@ -20,13 +21,14 @@ from tome.names import TextVocabulary
 from tome.pack_writer import PackWriter
 from tome.text import word_count
 
-PROMPT_VERSION = "summaries-v4"
+PROMPT_VERSION = "summaries-v5"
 ROLLUP_EVERY = 5  # chapters between "story so far" checkpoints
 # About 8k tokens, which leaves room for the context and the reply in the
 # pod's default 16,384-token window.
 CHUNK_WORDS = 6000
 CHAPTER_MAX_TOKENS = 700
 ROLLUP_MAX_TOKENS = 1100
+CHECK_MAX_TOKENS = 1500
 CALL_ATTEMPTS = 3
 RETRY_DELAY_S = 5.0
 
@@ -46,6 +48,52 @@ says a person's identity is unknown, leave it unknown.
 itself: never mention chapters, "the text" or what it does or does not reveal."""
 
 
+# The rollup check: the same model reads a rollup next to the chapter summaries
+# it was built from, and flags sentences they don't state. A rollup is where a
+# plan turns into a deed ("Mombi transforms Tip" for "Mombi plans to"), and the
+# next rollup, built from the same summaries, tends to make the same slip.
+# A verdict on every numbered sentence works far better than a list of problems:
+# in Stage A the 7B model found nothing wrong with its rollups when asked for a
+# list, and caught the Mombi slip when asked sentence by sentence. The check only
+# warns (see _Summarizer._rollup for why it doesn't rewrite).
+CHECK_SYSTEM = """You check a summary against the notes it was written from. For EACH \
+numbered sentence of the SUMMARY, decide whether the NOTES state it. Answer "no" if the notes \
+contradict it, if it tells a plan, threat or intention as if it happened, if it gives a \
+different person, or if it adds something the notes never say. Rewording and shortening are \
+fine."""
+CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "integer"},
+                    "supported": {"type": "string", "enum": ["yes", "no"]},
+                    "why": {"type": "string"},
+                },
+                "required": ["n", "supported", "why"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["verdicts"],
+    "additionalProperties": False,
+}
+# A sentence ends at . ! or ?, perhaps inside a closing quote, but not after a
+# title or an initial ("Mr. H. M. Woggle-Bug").
+_SENTENCE = re.compile(
+    r"(?<!\bMr\.)(?<!\bMrs\.)(?<!\bDr\.)(?<!\bSt\.)(?<!\b[A-Z]\.)"
+    r"(?:(?<=[.!?])|(?<=[.!?][\"”’']))\s+(?=[\"“‘'(]?[A-Z])"
+)
+
+
+def sentences(text: str) -> list[str]:
+    """``text`` split into sentences, keeping each sentence's exact characters."""
+    return [s for s in (x.strip() for x in _SENTENCE.split(text.strip())) if s]
+
+
 @dataclass
 class SummaryStats:
     chapters: int = 0
@@ -56,6 +104,11 @@ class SummaryStats:
     rollups_skipped: int = 0  # never stored: a cut-off rollup would hide recent events
     name_retries: int = 0  # replies regenerated for using names the text hasn't used yet
     unseen_names: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
+    rollup_checks: int = 0
+    rollup_check_errors: int = 0  # checks with no usable reply; the rollup is kept as is
+    # Rollup sentences the check found the chapter summaries don't state. Stored
+    # as written: a warning for whoever reviews the pack.
+    unsupported: dict[str, list[str]] = field(default_factory=dict)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float | None = None
@@ -139,6 +192,69 @@ class _Summarizer:
                 return retry, retry_names
         return text, names
 
+    def _structured(self, messages: list[dict], schema: dict, *, max_tokens: int):
+        """A structured reply, or None. Its calls count in the run's stats."""
+        usage = self.client.usage
+        before = len(usage.records)
+        try:
+            return self.client.structured(
+                messages, schema, name="rollup_check", purpose="rollup_check",
+                max_tokens=max_tokens,
+            )  # fmt: skip
+        except LLMError:  # includes StructuredOutputError
+            return None
+        finally:
+            st = self.stats
+            for r in usage.records[before:]:
+                st.llm_calls += 1
+                st.prompt_tokens += r.prompt_tokens
+                st.completion_tokens += r.completion_tokens
+                if r.cost_usd is not None:
+                    st.cost_usd = (st.cost_usd or 0.0) + r.cost_usd
+
+    def _unsupported(self, notes: str, sents: Sequence[str]) -> dict[int, str] | None:
+        """{index: why} for the sentences the notes don't state. None if the check failed."""
+        numbered = "\n".join(f"{i}. {x}" for i, x in enumerate(sents, start=1))
+        out = self._structured(
+            [
+                {"role": "system", "content": CHECK_SYSTEM},
+                {"role": "user", "content": f"NOTES:\n{notes}\n\nSUMMARY:\n{numbered}"},
+            ],
+            CHECK_SCHEMA,
+            max_tokens=CHECK_MAX_TOKENS,
+        )
+        self.stats.rollup_checks += 1
+        if out is None:
+            self.stats.rollup_check_errors += 1
+            return None
+        return {
+            v["n"] - 1: v["why"].strip()
+            for v in out["verdicts"]
+            if v["supported"] == "no" and 1 <= v["n"] <= len(sents)
+        }
+
+    def _rollup(
+        self, prompt: str, notes: str, *, where: str, purpose: str, words: int
+    ) -> str | None:
+        """A rollup that passed the name check, with the sentences its notes don't state noted.
+
+        The check only warns. Rewriting flagged sentences was tried in Stage A: the
+        7B model fixed about as many errors as it introduced ("Jinjur's army
+        conquers the Emerald City", which is right, became "Jinjur sends Mombi to
+        assist the Army of Revolt"), and a second check passed the new errors.
+        """
+        text, names = self._checked(
+            prompt, purpose=purpose, max_tokens=ROLLUP_MAX_TOKENS, words=words
+        )
+        self._note_unseen(where, names)
+        if text is None:
+            return None
+        sents = sentences(text)
+        bad = self._unsupported(notes, sents)
+        if bad:
+            self.stats.unsupported[where] = [sents[i] for i in sorted(bad)]
+        return text
+
     def _note_unseen(self, where: str, names: list[str]) -> None:
         if names:
             self.stats.unseen_names[where] = names
@@ -196,22 +312,23 @@ class _Summarizer:
             "each major event a sentence or less. Keep what a returning reader needs: main "
             "events, who is who, and what is unresolved at this point."
         )
-        text, names = self._checked(
-            "\n\n".join(parts), purpose="story_so_far", max_tokens=ROLLUP_MAX_TOKENS, words=200
+        return self._rollup(
+            "\n\n".join(parts),
+            "\n\n".join(parts[:-1]),
+            where=f"story so far through {label}",
+            purpose="story_so_far",
+            words=200,
         )
-        self._note_unseen(f"story so far through {label}", names)
-        return text
 
     def book_recap(self, title: str, summaries: Sequence[str]) -> str | None:
+        notes = f"CHAPTER SUMMARIES OF {title}, IN ORDER:\n" + "\n\n".join(summaries)
         prompt = (
-            f"CHAPTER SUMMARIES OF {title}, IN ORDER:\n" + "\n\n".join(summaries) + "\n\n"
+            f"{notes}\n\n"
             "Write a recap of this book in at most 400 words, for a reader starting the next one."
         )
-        text, names = self._checked(
-            prompt, purpose="book_recap", max_tokens=ROLLUP_MAX_TOKENS, words=200
+        return self._rollup(
+            prompt, notes, where=f"recap of {title}", purpose="book_recap", words=200
         )
-        self._note_unseen(f"recap of {title}", names)
-        return text
 
 
 def summarize_pack(

@@ -16,17 +16,28 @@ from tome.llm.client import ChatClient, LLMError
 from tome.llm.providers import PRESETS
 from tome.pack_writer import BookText, ChapterText, PackWriter, ReadingOrderViolation
 from tome.series import Series
-from tome.summarize import chunk_passages, summarize_pack
+from tome.summarize import CHECK_SYSTEM, chunk_passages, sentences, summarize_pack
 
 SERIES = Series("t", "T", "public_domain", ("vllm-local",))
 
 
-def _mock_client(handler) -> ChatClient:
+def _is_check(request: httpx.Request) -> bool:
+    return json.loads(request.content)["messages"][0]["content"] == CHECK_SYSTEM
+
+
+def _mock_client(handler, check=None) -> ChatClient:
+    """``handler`` answers the summary calls. Rollup checks pass, unless ``check`` answers them."""
+
+    def route(request):
+        if _is_check(request):
+            return check(request) if check else _reply('{"verdicts": []}')
+        return handler(request)
+
     return ChatClient(
         PRESETS["vllm-local"],
         SERIES,
         model="m",
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
+        http=httpx.Client(transport=httpx.MockTransport(route)),
     )
 
 
@@ -117,7 +128,7 @@ def test_rollups_land_on_checkpoints_and_book_ends(tmp_path):
         ("book", 6),
     ]
     assert (stats.chapters, stats.story_so_far, stats.book_recaps) == (6, 4, 2)
-    assert stats.llm_calls == 12
+    assert stats.llm_calls == 18 and stats.rollup_checks == 6  # each rollup is checked
 
 
 def test_long_chapter_is_chunked_with_a_running_draft(tmp_path):
@@ -223,11 +234,11 @@ def test_usage_and_cost_reach_the_run_record(tmp_path):
     stats = summarize_pack(w, _mock_client(lambda request: _reply(cost=0.5)))
     run = w.conn.execute("SELECT * FROM runs WHERE kind='summaries'").fetchone()
     w.close()
-    # One chapter summary, one story so far, one book recap.
+    # One chapter summary, one story so far, one book recap, and a check of each rollup.
     assert stats.cost_usd == 1.5
     assert run["llm_model"] == "m" and run["prompt_version"]
-    assert (run["prompt_tokens"], run["completion_tokens"]) == (30, 15)
-    assert json.loads(run["stats_json"])["llm_calls"] == 3
+    assert (run["prompt_tokens"], run["completion_tokens"]) == (50, 25)
+    assert json.loads(run["stats_json"])["llm_calls"] == 5
 
 
 def _cut_off_when(condition):
@@ -450,7 +461,7 @@ def test_name_that_survives_the_retry_is_reported(tmp_path):
         "story so far through BOOK 1, CHAPTER 1 (One)": ["Gale"],
         "recap of Book": ["Gale"],
     }
-    assert stats.llm_calls == 6
+    assert stats.llm_calls == 8  # 6 summary calls and a check of each rollup
 
 
 def test_name_used_by_an_earlier_chapter_is_allowed_later(tmp_path):
@@ -469,3 +480,90 @@ def test_name_used_by_an_earlier_chapter_is_allowed_later(tmp_path):
     # The first reply names Toto a chapter early, so it is regenerated. Later ones may name Toto.
     assert stats.name_retries == 1
     assert stats.unseen_names == {}
+
+
+# ------------------------------------------------------------- rollup check --
+
+
+def _spell_writer(tmp_path) -> PackWriter:
+    w = PackWriter(tmp_path / "spell.tome", pack_id="t", series_title="T")
+    text = "b1c1marker She plans to cast a spell at noon, and he runs."
+    w.add_book(1, BookText("Book 1", [ChapterText("Ch 1", [text])]))
+    return w
+
+
+def _verdicts(wrong):
+    """A fake check: "no" for each numbered sentence that ``wrong`` picks out."""
+
+    def check(request):
+        summary = json.loads(request.content)["messages"][-1]["content"].rsplit("SUMMARY:\n")[1]
+        verdicts = []
+        for line in summary.splitlines():
+            n, _, sentence = line.partition(". ")
+            bad = wrong(sentence)
+            verdicts.append({"n": int(n), "supported": "no" if bad else "yes", "why": "plan only"})
+        return _reply(json.dumps({"verdicts": verdicts}))
+
+    return check
+
+
+def _rollup_server(prompts):
+    """Rollups claim a deed the chapter summaries only plan."""
+
+    def handler(request):
+        prompt = json.loads(request.content)["messages"][-1]["content"]
+        prompts.append(prompt)
+        if "CHAPTERS OF THIS BOOK SO FAR" in prompt or "recap of this book" in prompt:
+            return _reply("She casts a spell. He runs.")
+        return _reply("She plans a spell. He runs.")
+
+    return handler
+
+
+def test_unsupported_rollup_sentences_are_reported_and_kept(tmp_path):
+    checks = []
+    verdicts = _verdicts(lambda x: "casts" in x)
+
+    def check(request):
+        checks.append(json.loads(request.content)["messages"][-1]["content"])
+        return verdicts(request)
+
+    w = _spell_writer(tmp_path)
+    stats = summarize_pack(w, _mock_client(_rollup_server([]), check))
+    texts = [r[0] for r in w.conn.execute("SELECT text FROM rollups ORDER BY rollup_id")]
+    w.close()
+    assert texts == ["She casts a spell. He runs."] * 2
+    assert stats.unsupported == {
+        "story so far through BOOK 1, CHAPTER 1 (Ch 1)": ["She casts a spell."],
+        "recap of Book 1": ["She casts a spell."],
+    }
+    # Each rollup is checked once, sentence by sentence, against the chapter summaries.
+    assert stats.rollup_checks == 2
+    assert all("SUMMARY:\n1. She casts a spell.\n2. He runs." in c for c in checks)
+    assert all("b1c1marker" not in c and "She plans a spell. He runs." in c for c in checks)
+
+
+def test_a_supported_rollup_reports_nothing(tmp_path):
+    w = _spell_writer(tmp_path)
+    stats = summarize_pack(w, _mock_client(_rollup_server([]), _verdicts(lambda x: False)))
+    w.close()
+    assert stats.unsupported == {} and stats.rollup_checks == 2
+
+
+def test_a_failed_check_keeps_the_rollup(tmp_path):
+    w = _spell_writer(tmp_path)
+    stats = summarize_pack(w, _mock_client(_rollup_server([]), lambda _r: _reply("not json")))
+    n = w.conn.execute("SELECT count(*) FROM rollups").fetchone()[0]
+    w.close()
+    assert n == 2 and stats.rollup_check_errors == 2 and stats.unsupported == {}
+
+
+def test_sentences_keep_quotes_titles_and_initials():
+    text = "He said, “Go home.” She left. Mr. H. M. Woggle-Bug waved. Why? Because."
+    assert sentences(text) == [
+        "He said, “Go home.”",
+        "She left.",
+        "Mr. H. M. Woggle-Bug waved.",
+        "Why?",
+        "Because.",
+    ]
