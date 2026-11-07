@@ -30,7 +30,7 @@ def _mock_client(handler, check=None) -> ChatClient:
 
     def route(request):
         if _is_check(request):
-            return check(request) if check else _reply('{"flags": []}')
+            return check(request) if check else _reply('{"verdicts": []}')
         return handler(request)
 
     return ChatClient(
@@ -485,68 +485,97 @@ def test_name_used_by_an_earlier_chapter_is_allowed_later(tmp_path):
 # ------------------------------------------------------------- rollup check --
 
 
-def _flag(sentence: str, correction: str = "The notes say she only plans to.") -> httpx.Response:
-    return _reply(json.dumps({"flags": [{"sentence": sentence, "correction": correction}]}))
+def _spell_writer(tmp_path) -> PackWriter:
+    w = PackWriter(tmp_path / "spell.tome", pack_id="t", series_title="T")
+    text = "b1c1marker She plans to cast a spell at noon, and he runs."
+    w.add_book(1, BookText("Book 1", [ChapterText("Ch 1", [text])]))
+    return w
 
 
-def _rollup_server(prompts, rewrite="She plans a spell."):
-    """Rollups claim a deed until a prompt lists corrections; chapter summaries are plain."""
+def _verdicts(wrong):
+    """A fake check: "no" for each numbered sentence that ``wrong`` picks out."""
+
+    def check(request):
+        summary = json.loads(request.content)["messages"][-1]["content"].rsplit("SUMMARY:\n")[1]
+        verdicts = []
+        for line in summary.splitlines():
+            n, _, sentence = line.partition(". ")
+            bad = wrong(sentence)
+            verdicts.append({"n": int(n), "supported": "no" if bad else "yes", "why": "plan only"})
+        return _reply(json.dumps({"verdicts": verdicts}))
+
+    return check
+
+
+def _rollup_server(prompts, fix="She plans a spell."):
+    """Rollups claim a deed; a request to fix a sentence gets ``fix``."""
 
     def handler(request):
         prompt = json.loads(request.content)["messages"][-1]["content"]
         prompts.append(prompt)
+        if "This sentence from a summary" in prompt:
+            return _reply(fix)
         if "CHAPTERS OF THIS BOOK SO FAR" in prompt or "recap of this book" in prompt:
-            if "Don't repeat these mistakes" in prompt:
-                return _reply(rewrite)
             return _reply("She casts a spell. He runs.")
         return _reply("She plans a spell. He runs.")
 
     return handler
 
 
-def test_a_flagged_rollup_is_rewritten_with_the_corrections(tmp_path):
+def test_an_unsupported_sentence_is_fixed_in_place(tmp_path):
     prompts, checks = [], []
+    verdicts = _verdicts(lambda x: "casts" in x)
 
     def check(request):
-        notes = json.loads(request.content)["messages"][-1]["content"]
-        checks.append(notes)
-        summary = notes.rsplit("SUMMARY:\n", 1)[1]
-        return _flag("She casts a spell.") if "casts" in summary else _reply('{"flags": []}')
+        checks.append(json.loads(request.content)["messages"][-1]["content"])
+        return verdicts(request)
 
-    w = _writer(tmp_path, books=1, chapters=1)
+    w = _spell_writer(tmp_path)
     stats = summarize_pack(w, _mock_client(_rollup_server(prompts), check))
     texts = [r[0] for r in w.conn.execute("SELECT text FROM rollups ORDER BY rollup_id")]
     w.close()
-    assert texts == ["She plans a spell.", "She plans a spell."]
-    retry = next(p for p in prompts if "Don't repeat these mistakes" in p)
-    assert "“She casts a spell.” The notes say she only plans to." in retry
-    assert (stats.rollup_checks, stats.rollup_retries, stats.unsupported) == (4, 2, {})
-    # The check reads the chapter summaries, never the book's text.
+    assert texts == ["She plans a spell. He runs."] * 2
+    fix = next(p for p in prompts if "This sentence from a summary" in p)
+    assert "“She casts a spell.”" in fix and "The problem: plan only" in fix
+    assert (stats.rollup_retries, stats.rollup_fixed, stats.unsupported) == (2, 2, {})
+    # Each rollup and each fix is checked, against the chapter summaries, never the text.
+    assert stats.rollup_checks == 4
     assert all("b1c1marker" not in c and "She plans a spell. He runs." in c for c in checks)
 
 
-def test_a_rewrite_that_is_no_better_is_dropped_and_reported(tmp_path):
-    w = _writer(tmp_path, books=1, chapters=1)
-    server = _rollup_server([], rewrite="She plans it. He runs.")
-    stats = summarize_pack(w, _mock_client(server, lambda _r: _flag("He runs.")))
+def test_a_fix_that_fails_its_check_is_dropped_and_reported(tmp_path):
+    w = _spell_writer(tmp_path)
+    server = _rollup_server([], fix="She casts a spell at noon.")
+    stats = summarize_pack(w, _mock_client(server, _verdicts(lambda x: "casts" in x)))
     texts = [r[0] for r in w.conn.execute("SELECT text FROM rollups ORDER BY rollup_id")]
     w.close()
     assert texts == ["She casts a spell. He runs."] * 2
+    assert stats.rollup_fixed == 0
     assert stats.unsupported == {
-        "story so far through BOOK 1, CHAPTER 1 (Ch 1)": ["He runs."],
-        "recap of Book 1": ["He runs."],
+        "story so far through BOOK 1, CHAPTER 1 (Ch 1)": ["She casts a spell."],
+        "recap of Book 1": ["She casts a spell."],
     }
 
 
-def test_flags_that_quote_nothing_in_the_rollup_are_ignored(tmp_path):
-    w = _writer(tmp_path, books=1, chapters=1)
-    stats = summarize_pack(w, _mock_client(_rollup_server([]), lambda _r: _flag("Not in it.")))
+def test_a_fix_with_a_name_the_text_has_not_used_is_refused(tmp_path):
+    w = _spell_writer(tmp_path)
+    server = _rollup_server([], fix="Mombi plans a spell.")
+    stats = summarize_pack(w, _mock_client(server, _verdicts(lambda x: "casts" in x)))
     w.close()
-    assert stats.rollup_retries == 0 and stats.unsupported == {}
+    assert stats.rollup_fixed == 0 and len(stats.unsupported) == 2
+
+
+def test_a_supported_rollup_is_left_alone(tmp_path):
+    prompts = []
+    w = _spell_writer(tmp_path)
+    stats = summarize_pack(w, _mock_client(_rollup_server(prompts), _verdicts(lambda x: False)))
+    w.close()
+    assert stats.rollup_retries == 0 and stats.rollup_checks == 2
+    assert not any("This sentence from a summary" in p for p in prompts)
 
 
 def test_a_failed_check_keeps_the_rollup(tmp_path):
-    w = _writer(tmp_path, books=1, chapters=1)
+    w = _spell_writer(tmp_path)
     stats = summarize_pack(w, _mock_client(_rollup_server([]), lambda _r: _reply("not json")))
     n = w.conn.execute("SELECT count(*) FROM rollups").fetchone()[0]
     w.close()

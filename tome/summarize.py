@@ -16,7 +16,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 
-from tome.llm.client import ChatClient, LLMError, StructuredOutputError
+from tome.llm.client import ChatClient, LLMError
 from tome.names import TextVocabulary
 from tome.pack_writer import PackWriter
 from tome.text import word_count
@@ -50,36 +50,48 @@ itself: never mention chapters, "the text" or what it does or does not reveal.""
 
 # The rollup check: the same model reads a rollup next to the chapter summaries
 # it was built from. A rollup is where a plan turns into a deed ("Mombi
-# transforms Tip" for "Mombi plans to"), and once one holds an invented fact
-# every later rollup copies it.
-CHECK_SYSTEM = """You check a summary against the notes it was written from. Flag every \
-sentence of the SUMMARY that the NOTES contradict, or that states something the NOTES don't \
-say: a different person doing something, a plan or threat told as if it happened, a wrong \
-order of events, or a detail the notes never give. Rewording, shortening and leaving things \
-out are fine. Copy each flagged sentence exactly. If nothing is wrong, return an empty list."""
+# transforms Tip" for "Mombi plans to"), and the next rollup, built from the same
+# summaries, tends to make the same slip. Asking for a verdict on every numbered
+# sentence works far better than asking for a list of problems: in Stage A the
+# 7B model found nothing wrong with its rollups when asked for a list, and caught
+# the Mombi slip when asked sentence by sentence.
+CHECK_SYSTEM = """You check a summary against the notes it was written from. For EACH \
+numbered sentence of the SUMMARY, decide whether the NOTES state it. Answer "no" if the notes \
+contradict it, if it tells a plan, threat or intention as if it happened, if it gives a \
+different person, or if it adds something the notes never say. Rewording and shortening are \
+fine."""
 CHECK_SCHEMA = {
     "type": "object",
     "properties": {
-        "flags": {
+        "verdicts": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "sentence": {"type": "string"},
-                    "correction": {"type": "string"},
+                    "n": {"type": "integer"},
+                    "supported": {"type": "string", "enum": ["yes", "no"]},
+                    "why": {"type": "string"},
                 },
-                "required": ["sentence", "correction"],
+                "required": ["n", "supported", "why"],
                 "additionalProperties": False,
             },
         }
     },
-    "required": ["flags"],
+    "required": ["verdicts"],
     "additionalProperties": False,
 }
+FIX_MAX_TOKENS = 200
+# A sentence ends at . ! or ?, perhaps inside a closing quote, but not after a
+# title or an initial ("Mr. H. M. Woggle-Bug").
+_SENTENCE = re.compile(
+    r"(?<!\bMr\.)(?<!\bMrs\.)(?<!\bDr\.)(?<!\bSt\.)(?<!\b[A-Z]\.)"
+    r"(?:(?<=[.!?])|(?<=[.!?][\"”’']))\s+(?=[\"“‘'(]?[A-Z])"
+)
 
 
-def _norm(text: str) -> str:
-    return " ".join(re.sub(r"[“”]", '"', re.sub(r"[‘’]", "'", text)).split())
+def sentences(text: str) -> list[str]:
+    """``text`` split into sentences, keeping each sentence's exact characters."""
+    return [s for s in (x.strip() for x in _SENTENCE.split(text.strip())) if s]
 
 
 @dataclass
@@ -93,7 +105,8 @@ class SummaryStats:
     name_retries: int = 0  # replies regenerated for using names the text hasn't used yet
     unseen_names: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
     rollup_checks: int = 0
-    rollup_retries: int = 0  # rollups rewritten because the check flagged sentences
+    rollup_retries: int = 0  # rollups with sentences the check judged unsupported
+    rollup_fixed: int = 0  # sentences replaced by a rewrite that passed the check
     rollup_check_errors: int = 0  # checks with no usable reply; the rollup is kept as is
     unsupported: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
     prompt_tokens: int = 0
@@ -179,73 +192,97 @@ class _Summarizer:
                 return retry, retry_names
         return text, names
 
-    def _flags(self, notes: str, summary: str) -> list[dict] | None:
-        """Sentences of ``summary`` its notes don't support. None if the check failed."""
-        messages = [
-            {"role": "system", "content": CHECK_SYSTEM},
-            {"role": "user", "content": f"NOTES:\n{notes}\n\nSUMMARY:\n{summary}"},
-        ]
+    def _structured(self, messages: list[dict], schema: dict, *, max_tokens: int):
+        """A structured reply, or None. Its calls count in the run's stats."""
         usage = self.client.usage
         before = len(usage.records)
         try:
-            out = self.client.structured(
-                messages, CHECK_SCHEMA, name="rollup_check", purpose="rollup_check",
-                max_tokens=CHECK_MAX_TOKENS,
+            return self.client.structured(
+                messages, schema, name="rollup_check", purpose="rollup_check",
+                max_tokens=max_tokens,
             )  # fmt: skip
-        except (StructuredOutputError, LLMError):
-            out = None
+        except LLMError:  # includes StructuredOutputError
+            return None
         finally:
-            s = self.stats
+            st = self.stats
             for r in usage.records[before:]:
-                s.llm_calls += 1
-                s.prompt_tokens += r.prompt_tokens
-                s.completion_tokens += r.completion_tokens
+                st.llm_calls += 1
+                st.prompt_tokens += r.prompt_tokens
+                st.completion_tokens += r.completion_tokens
                 if r.cost_usd is not None:
-                    s.cost_usd = (s.cost_usd or 0.0) + r.cost_usd
+                    st.cost_usd = (st.cost_usd or 0.0) + r.cost_usd
+
+    def _unsupported(self, notes: str, sents: Sequence[str]) -> dict[int, str] | None:
+        """{index: why} for the sentences the notes don't state. None if the check failed."""
+        numbered = "\n".join(f"{i}. {x}" for i, x in enumerate(sents, start=1))
+        out = self._structured(
+            [
+                {"role": "system", "content": CHECK_SYSTEM},
+                {"role": "user", "content": f"NOTES:\n{notes}\n\nSUMMARY:\n{numbered}"},
+            ],
+            CHECK_SCHEMA,
+            max_tokens=CHECK_MAX_TOKENS,
+        )
         self.stats.rollup_checks += 1
         if out is None:
             self.stats.rollup_check_errors += 1
             return None
-        text, seen, flags = _norm(summary), set(), []
-        for flag in out["flags"]:
-            sentence = flag["sentence"].strip()
-            if sentence and sentence not in seen and _norm(sentence) in text:
-                seen.add(sentence)
-                flags.append({"sentence": sentence, "correction": flag["correction"].strip()})
-        return flags
+        return {
+            v["n"] - 1: v["why"].strip()
+            for v in out["verdicts"]
+            if v["supported"] == "no" and 1 <= v["n"] <= len(sents)
+        }
+
+    def _fix_sentence(self, notes: str, sentence: str, why: str) -> str | None:
+        """One sentence rewritten to state only what the notes state, or None."""
+        prompt = (
+            f"NOTES:\n{notes}\n\nThis sentence from a summary of the notes is wrong: "
+            f"“{sentence}”\nThe problem: {why}\n\nRewrite it as one sentence that states only "
+            "what the notes state. Reply with the sentence alone."
+        )
+        try:
+            text, cut_off = self._call(prompt, purpose="rollup_fix", max_tokens=FIX_MAX_TOKENS)
+        except LLMError:
+            return None
+        text = text.strip().strip('“”"').strip()
+        if cut_off or len(sentences(text)) != 1 or self.known.unseen_names(text):
+            return None
+        return text
 
     def _rollup(
         self, prompt: str, notes: str, *, where: str, purpose: str, words: int
     ) -> str | None:
-        """A rollup that passed the name check, then checked against its notes.
+        """A rollup that passed the name check, with its unsupported sentences fixed.
 
-        Flagged sentences get one rewrite, kept only if a second check flags fewer.
-        Sentences are never deleted: dropping one can drop the fact a reader needs.
+        Every sentence gets a verdict against the notes. Each one judged unsupported
+        is rewritten on its own, and the rewrite replaces it only if a second check
+        passes it. Sentences are never deleted: dropping one can drop the fact a
+        reader needs, and the rest of the rollup is left exactly as written.
         """
         text, names = self._checked(
             prompt, purpose=purpose, max_tokens=ROLLUP_MAX_TOKENS, words=words
         )
-        if text is None:
-            self._note_unseen(where, names)
-            return None
-        flags = self._flags(notes, text)
-        if flags:
-            self.stats.rollup_retries += 1
-            fixes = "\n".join(f"- “{f['sentence']}” {f['correction']}" for f in flags)
-            stricter = (
-                f"{prompt}\n\nA first draft had sentences the notes above don't support. "
-                f"Don't repeat these mistakes:\n{fixes}\nState only what the notes state."
-            )
-            retry, retry_names = self._checked(
-                stricter, purpose=purpose, max_tokens=ROLLUP_MAX_TOKENS, words=words
-            )
-            if retry is not None:
-                retry_flags = self._flags(notes, retry)
-                if retry_flags is not None and len(retry_flags) < len(flags):
-                    text, names, flags = retry, retry_names, retry_flags
-        if flags:
-            self.stats.unsupported[where] = [f["sentence"] for f in flags]
         self._note_unseen(where, names)
+        if text is None:
+            return None
+        sents = sentences(text)
+        bad = self._unsupported(notes, sents)
+        if not bad:
+            return text
+        self.stats.rollup_retries += 1
+        fixes = {i: f for i, why in bad.items() if (f := self._fix_sentence(notes, sents[i], why))}
+        passed: set[int] = set()
+        if fixes:
+            order = list(fixes)
+            verdict = self._unsupported(notes, [fixes[i] for i in order])
+            if verdict is not None:
+                passed = {i for k, i in enumerate(order) if k not in verdict}
+        for i in passed:
+            text = text.replace(sents[i], fixes[i], 1)
+        self.stats.rollup_fixed += len(passed)
+        left = [sents[i] for i in sorted(bad) if i not in passed]
+        if left:
+            self.stats.unsupported[where] = left
         return text
 
     def _note_unseen(self, where: str, names: list[str]) -> None:

@@ -30,6 +30,7 @@ from tome.evals.runner import load_cases, run_eval
 from tome.horizon import HorizonReader
 from tome.llm.client import ChatClient, LLMError
 from tome.series import Series
+from tome.summarize import sentences
 
 SMALL_MODEL = "qwen/qwen-2.5-7b-instruct"  # the pod's Qwen/Qwen2.5-7B-Instruct
 LARGE_MODEL = "qwen/qwen-2.5-72b-instruct"  # the ~70B tier, same family
@@ -103,12 +104,6 @@ JUDGE_SCHEMA = {
     "required": ["flags"],
     "additionalProperties": False,
 }
-
-_SENTENCE = re.compile(r"(?<=[.!?])[\"”’']?\s+(?=[\"“‘'(]?[A-Z])")
-
-
-def sentences(text: str) -> list[str]:
-    return [s for s in (x.strip() for x in _SENTENCE.split(text.strip())) if s]
 
 
 def slug(model: str) -> str:
@@ -283,6 +278,7 @@ class Score:
     unseen_names: dict[str, list[str]] = field(default_factory=dict)
     rollup_checks: int = 0
     rollup_retries: int = 0
+    rollup_fixed: int = 0
     rollup_check_errors: int = 0
     unsupported: dict[str, list[str]] = field(default_factory=dict)  # left after the rewrite
     leaks: int = 0
@@ -316,7 +312,7 @@ def score_pack(target: Target, model: str, pack: Path, judgments: Sequence[Judgm
     for name in (
         "chapters", "llm_calls", "prompt_tokens", "completion_tokens", "cost_usd",
         "truncated", "rollups_skipped", "name_retries", "unseen_names",
-        "rollup_checks", "rollup_retries", "rollup_check_errors", "unsupported",
+        "rollup_checks", "rollup_retries", "rollup_fixed", "rollup_check_errors", "unsupported",
     ):  # fmt: skip
         setattr(s, name, stats.get(name, getattr(s, name)))
     report = run_eval(pack, load_cases(target.cases))
@@ -465,8 +461,11 @@ def format_report(scores: Sequence[Score], judge_model: str) -> str:
         row("Judge errors", lambda s: str(s.judge_errors))
         row("Unseen-name retries / left", lambda s: f"{s.name_retries} / {len(s.unseen_names)}")
         row(
-            "Rollup self-checks: rewrites / still flagged / failed",
-            lambda s: f"{s.rollup_retries} / {len(s.unsupported)} / {s.rollup_check_errors}",
+            "Rollup self-check: sentences fixed / left / failed checks",
+            lambda s: (
+                f"{s.rollup_fixed} / {sum(map(len, s.unsupported.values()))} / "
+                f"{s.rollup_check_errors}"
+            ),
         )
         row("Cut-off replies / skipped rollups", lambda s: f"{s.truncated} / {s.rollups_skipped}")
         row("Tokens in + out", lambda s: f"{s.prompt_tokens:,} + {s.completion_tokens:,}")
