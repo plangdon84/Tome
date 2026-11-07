@@ -16,7 +16,7 @@ from tome.llm.client import ChatClient, LLMError
 from tome.llm.providers import PRESETS
 from tome.pack_writer import BookText, ChapterText, PackWriter, ReadingOrderViolation
 from tome.series import Series
-from tome.summarize import CHECK_SYSTEM, chunk_passages, summarize_pack
+from tome.summarize import CHECK_SYSTEM, chunk_passages, sentences, summarize_pack
 
 SERIES = Series("t", "T", "public_domain", ("vllm-local",))
 
@@ -507,14 +507,12 @@ def _verdicts(wrong):
     return check
 
 
-def _rollup_server(prompts, fix="She plans a spell."):
-    """Rollups claim a deed; a request to fix a sentence gets ``fix``."""
+def _rollup_server(prompts):
+    """Rollups claim a deed the chapter summaries only plan."""
 
     def handler(request):
         prompt = json.loads(request.content)["messages"][-1]["content"]
         prompts.append(prompt)
-        if "This sentence from a summary" in prompt:
-            return _reply(fix)
         if "CHAPTERS OF THIS BOOK SO FAR" in prompt or "recap of this book" in prompt:
             return _reply("She casts a spell. He runs.")
         return _reply("She plans a spell. He runs.")
@@ -522,8 +520,8 @@ def _rollup_server(prompts, fix="She plans a spell."):
     return handler
 
 
-def test_an_unsupported_sentence_is_fixed_in_place(tmp_path):
-    prompts, checks = [], []
+def test_unsupported_rollup_sentences_are_reported_and_kept(tmp_path):
+    checks = []
     verdicts = _verdicts(lambda x: "casts" in x)
 
     def check(request):
@@ -531,48 +529,25 @@ def test_an_unsupported_sentence_is_fixed_in_place(tmp_path):
         return verdicts(request)
 
     w = _spell_writer(tmp_path)
-    stats = summarize_pack(w, _mock_client(_rollup_server(prompts), check))
-    texts = [r[0] for r in w.conn.execute("SELECT text FROM rollups ORDER BY rollup_id")]
-    w.close()
-    assert texts == ["She plans a spell. He runs."] * 2
-    fix = next(p for p in prompts if "This sentence from a summary" in p)
-    assert "“She casts a spell.”" in fix and "The problem: plan only" in fix
-    assert (stats.rollup_retries, stats.rollup_fixed, stats.unsupported) == (2, 2, {})
-    assert stats.fixes["recap of Book 1"] == [["She casts a spell.", "She plans a spell."]]
-    # Each rollup and each fix is checked, against the chapter summaries, never the text.
-    assert stats.rollup_checks == 4
-    assert all("b1c1marker" not in c and "She plans a spell. He runs." in c for c in checks)
-
-
-def test_a_fix_that_fails_its_check_is_dropped_and_reported(tmp_path):
-    w = _spell_writer(tmp_path)
-    server = _rollup_server([], fix="She casts a spell at noon.")
-    stats = summarize_pack(w, _mock_client(server, _verdicts(lambda x: "casts" in x)))
+    stats = summarize_pack(w, _mock_client(_rollup_server([]), check))
     texts = [r[0] for r in w.conn.execute("SELECT text FROM rollups ORDER BY rollup_id")]
     w.close()
     assert texts == ["She casts a spell. He runs."] * 2
-    assert stats.rollup_fixed == 0
     assert stats.unsupported == {
         "story so far through BOOK 1, CHAPTER 1 (Ch 1)": ["She casts a spell."],
         "recap of Book 1": ["She casts a spell."],
     }
+    # Each rollup is checked once, sentence by sentence, against the chapter summaries.
+    assert stats.rollup_checks == 2
+    assert all("SUMMARY:\n1. She casts a spell.\n2. He runs." in c for c in checks)
+    assert all("b1c1marker" not in c and "She plans a spell. He runs." in c for c in checks)
 
 
-def test_a_fix_with_a_name_the_text_has_not_used_is_refused(tmp_path):
+def test_a_supported_rollup_reports_nothing(tmp_path):
     w = _spell_writer(tmp_path)
-    server = _rollup_server([], fix="Mombi plans a spell.")
-    stats = summarize_pack(w, _mock_client(server, _verdicts(lambda x: "casts" in x)))
+    stats = summarize_pack(w, _mock_client(_rollup_server([]), _verdicts(lambda x: False)))
     w.close()
-    assert stats.rollup_fixed == 0 and len(stats.unsupported) == 2
-
-
-def test_a_supported_rollup_is_left_alone(tmp_path):
-    prompts = []
-    w = _spell_writer(tmp_path)
-    stats = summarize_pack(w, _mock_client(_rollup_server(prompts), _verdicts(lambda x: False)))
-    w.close()
-    assert stats.rollup_retries == 0 and stats.rollup_checks == 2
-    assert not any("This sentence from a summary" in p for p in prompts)
+    assert stats.unsupported == {} and stats.rollup_checks == 2
 
 
 def test_a_failed_check_keeps_the_rollup(tmp_path):
@@ -580,4 +555,15 @@ def test_a_failed_check_keeps_the_rollup(tmp_path):
     stats = summarize_pack(w, _mock_client(_rollup_server([]), lambda _r: _reply("not json")))
     n = w.conn.execute("SELECT count(*) FROM rollups").fetchone()[0]
     w.close()
-    assert n == 2 and stats.rollup_check_errors == 2 and stats.rollup_retries == 0
+    assert n == 2 and stats.rollup_check_errors == 2 and stats.unsupported == {}
+
+
+def test_sentences_keep_quotes_titles_and_initials():
+    text = "He said, “Go home.” She left. Mr. H. M. Woggle-Bug waved. Why? Because."
+    assert sentences(text) == [
+        "He said, “Go home.”",
+        "She left.",
+        "Mr. H. M. Woggle-Bug waved.",
+        "Why?",
+        "Because.",
+    ]

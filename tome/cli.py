@@ -187,6 +187,11 @@ def ingest(
     )
     for where, names in stats.unseen_names.items():
         typer.echo(f"warning: {where} uses names not in the text yet: {', '.join(names)}", err=True)
+    for where, flagged in stats.unsupported.items():
+        for sentence in flagged:
+            typer.echo(f"check: {where} may not be supported: “{sentence}”", err=True)
+    if stats.rollup_check_errors:
+        typer.echo(f"warning: {stats.rollup_check_errors} rollup checks failed", err=True)
     if stats.truncated or stats.rollups_skipped:
         typer.echo(
             f"warning: {stats.truncated} replies hit the token limit; "

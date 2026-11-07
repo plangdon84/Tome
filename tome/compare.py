@@ -277,8 +277,6 @@ class Score:
     name_retries: int = 0
     unseen_names: dict[str, list[str]] = field(default_factory=dict)
     rollup_checks: int = 0
-    rollup_retries: int = 0
-    rollup_fixed: int = 0
     rollup_check_errors: int = 0
     unsupported: dict[str, list[str]] = field(default_factory=dict)  # left after the rewrite
     leaks: int = 0
@@ -312,7 +310,7 @@ def score_pack(target: Target, model: str, pack: Path, judgments: Sequence[Judgm
     for name in (
         "chapters", "llm_calls", "prompt_tokens", "completion_tokens", "cost_usd",
         "truncated", "rollups_skipped", "name_retries", "unseen_names",
-        "rollup_checks", "rollup_retries", "rollup_fixed", "rollup_check_errors", "unsupported",
+        "rollup_checks", "rollup_check_errors", "unsupported",
     ):  # fmt: skip
         setattr(s, name, stats.get(name, getattr(s, name)))
     report = run_eval(pack, load_cases(target.cases))
@@ -461,11 +459,8 @@ def format_report(scores: Sequence[Score], judge_model: str) -> str:
         row("Judge errors", lambda s: str(s.judge_errors))
         row("Unseen-name retries / left", lambda s: f"{s.name_retries} / {len(s.unseen_names)}")
         row(
-            "Rollup self-check: sentences fixed / left / failed checks",
-            lambda s: (
-                f"{s.rollup_fixed} / {sum(map(len, s.unsupported.values()))} / "
-                f"{s.rollup_check_errors}"
-            ),
+            "Rollup self-check: sentences flagged / failed checks",
+            lambda s: f"{sum(map(len, s.unsupported.values()))} / {s.rollup_check_errors}",
         )
         row("Cut-off replies / skipped rollups", lambda s: f"{s.truncated} / {s.rollups_skipped}")
         row("Tokens in + out", lambda s: f"{s.prompt_tokens:,} + {s.completion_tokens:,}")
@@ -480,6 +475,9 @@ def format_report(scores: Sequence[Score], judge_model: str) -> str:
                 lines.append(f"- Coverage miss {case}: {', '.join(misses)}")
             for where, names in s.unseen_names.items():
                 lines.append(f"- Unseen names left in {where}: {', '.join(names)}")
+            for where, flagged in s.unsupported.items():
+                for sentence in flagged:
+                    lines.append(f"- Self-check flagged ({where}): “{sentence}”")
             for f in sorted(s.flagged, key=lambda f: PROBLEMS.index(f["problem"])):
                 quote = f"“{f['sentence']}”"
                 lines.append(f"- **{f['problem']}** ({f['where']}): {quote} {f['reason']}")

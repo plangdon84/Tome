@@ -49,12 +49,13 @@ itself: never mention chapters, "the text" or what it does or does not reveal.""
 
 
 # The rollup check: the same model reads a rollup next to the chapter summaries
-# it was built from. A rollup is where a plan turns into a deed ("Mombi
-# transforms Tip" for "Mombi plans to"), and the next rollup, built from the same
-# summaries, tends to make the same slip. Asking for a verdict on every numbered
-# sentence works far better than asking for a list of problems: in Stage A the
-# 7B model found nothing wrong with its rollups when asked for a list, and caught
-# the Mombi slip when asked sentence by sentence.
+# it was built from, and flags sentences they don't state. A rollup is where a
+# plan turns into a deed ("Mombi transforms Tip" for "Mombi plans to"), and the
+# next rollup, built from the same summaries, tends to make the same slip.
+# A verdict on every numbered sentence works far better than a list of problems:
+# in Stage A the 7B model found nothing wrong with its rollups when asked for a
+# list, and caught the Mombi slip when asked sentence by sentence. The check only
+# warns (see _Summarizer._rollup for why it doesn't rewrite).
 CHECK_SYSTEM = """You check a summary against the notes it was written from. For EACH \
 numbered sentence of the SUMMARY, decide whether the NOTES state it. Answer "no" if the notes \
 contradict it, if it tells a plan, threat or intention as if it happened, if it gives a \
@@ -80,7 +81,6 @@ CHECK_SCHEMA = {
     "required": ["verdicts"],
     "additionalProperties": False,
 }
-FIX_MAX_TOKENS = 200
 # A sentence ends at . ! or ?, perhaps inside a closing quote, but not after a
 # title or an initial ("Mr. H. M. Woggle-Bug").
 _SENTENCE = re.compile(
@@ -105,11 +105,10 @@ class SummaryStats:
     name_retries: int = 0  # replies regenerated for using names the text hasn't used yet
     unseen_names: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
     rollup_checks: int = 0
-    rollup_retries: int = 0  # rollups with sentences the check judged unsupported
-    rollup_fixed: int = 0  # sentences replaced by a rewrite that passed the check
-    fixes: dict[str, list[list[str]]] = field(default_factory=dict)  # where -> [[old, new]]
     rollup_check_errors: int = 0  # checks with no usable reply; the rollup is kept as is
-    unsupported: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
+    # Rollup sentences the check found the chapter summaries don't state. Stored
+    # as written: a warning for whoever reviews the pack.
+    unsupported: dict[str, list[str]] = field(default_factory=dict)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float | None = None
@@ -234,31 +233,15 @@ class _Summarizer:
             if v["supported"] == "no" and 1 <= v["n"] <= len(sents)
         }
 
-    def _fix_sentence(self, notes: str, sentence: str, why: str) -> str | None:
-        """One sentence rewritten to state only what the notes state, or None."""
-        prompt = (
-            f"NOTES:\n{notes}\n\nThis sentence from a summary of the notes is wrong: "
-            f"“{sentence}”\nThe problem: {why}\n\nRewrite it as one sentence that states only "
-            "what the notes state. Reply with the sentence alone."
-        )
-        try:
-            text, cut_off = self._call(prompt, purpose="rollup_fix", max_tokens=FIX_MAX_TOKENS)
-        except LLMError:
-            return None
-        text = text.strip().strip('“”"').strip()
-        if cut_off or len(sentences(text)) != 1 or self.known.unseen_names(text):
-            return None
-        return text
-
     def _rollup(
         self, prompt: str, notes: str, *, where: str, purpose: str, words: int
     ) -> str | None:
-        """A rollup that passed the name check, with its unsupported sentences fixed.
+        """A rollup that passed the name check, with the sentences its notes don't state noted.
 
-        Every sentence gets a verdict against the notes. Each one judged unsupported
-        is rewritten on its own, and the rewrite replaces it only if a second check
-        passes it. Sentences are never deleted: dropping one can drop the fact a
-        reader needs, and the rest of the rollup is left exactly as written.
+        The check only warns. Rewriting flagged sentences was tried in Stage A: the
+        7B model fixed about as many errors as it introduced ("Jinjur's army
+        conquers the Emerald City", which is right, became "Jinjur sends Mombi to
+        assist the Army of Revolt"), and a second check passed the new errors.
         """
         text, names = self._checked(
             prompt, purpose=purpose, max_tokens=ROLLUP_MAX_TOKENS, words=words
@@ -268,24 +251,8 @@ class _Summarizer:
             return None
         sents = sentences(text)
         bad = self._unsupported(notes, sents)
-        if not bad:
-            return text
-        self.stats.rollup_retries += 1
-        fixes = {i: f for i, why in bad.items() if (f := self._fix_sentence(notes, sents[i], why))}
-        passed: set[int] = set()
-        if fixes:
-            order = list(fixes)
-            verdict = self._unsupported(notes, [fixes[i] for i in order])
-            if verdict is not None:
-                passed = {i for k, i in enumerate(order) if k not in verdict}
-        for i in sorted(passed):
-            text = text.replace(sents[i], fixes[i], 1)
-        if passed:
-            self.stats.fixes[where] = [[sents[i], fixes[i]] for i in sorted(passed)]
-        self.stats.rollup_fixed += len(passed)
-        left = [sents[i] for i in sorted(bad) if i not in passed]
-        if left:
-            self.stats.unsupported[where] = left
+        if bad:
+            self.stats.unsupported[where] = [sents[i] for i in sorted(bad)]
         return text
 
     def _note_unseen(self, where: str, names: list[str]) -> None:

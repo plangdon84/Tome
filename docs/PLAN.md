@@ -158,7 +158,10 @@ this?" questions.
   7B against 72B on Oz 1–2 and Monte Cristo ch 1–34. No summary leaks for
   either model. The 72B model had 15 vs 34 contradicted sentences on Oz and 7 vs 36
   on Monte Cristo, and a 7B error carried through four rollups in a row.
-  Coverage was a wash. Stage B is next.*
+  Coverage was a wash. Follow-ups: the search fallback no longer leaks the
+  Sinbad case, and rollups are checked sentence by sentence against their
+  chapter summaries, as a warning only, since 7B's rewrites added as many errors as
+  they fixed. Stage B is next.*
 
 **Gate:** recaps are accurate and spoiler-free. Search returns the right
 passages for "where have I seen X?"
