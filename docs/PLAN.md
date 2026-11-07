@@ -132,8 +132,12 @@ this?" questions.
   rollup rebuilt from all of its book's chapter summaries. Oz book 1 compiled
   live 2026-11-07 with `Qwen/Qwen2.5-7B-Instruct`: no leaks in the 4 book 1
   spoiler cases, and all 5 book 1 coverage cases passed. The 7B model still makes
-  factual slips and used outside knowledge once ("Dorothy Gale"), so the Gate
-  below stays open until the model comparison. No resume after a failed run yet.)*
+  factual slips, so the Gate below stays open until the model comparison. No
+  resume after a failed run yet. `tome/names.py` flags names the text hasn't
+  used yet and regenerates once. On a second live run that removed "Dorothy Gale"
+  with no flagged names left. A false alarm on "Princess" also rewrote chapter 14,
+  and the end-of-book rollup that followed dropped the Wicked Witch of the West
+  (coverage case oz-c06), so rollups are fragile to small changes in their input.)*
 - [x] CLI:
   - `tome ingest`
   - `tome search --at "b3 ch10" "scabbers"` *(exists: keyword search, horizon-filtered)*

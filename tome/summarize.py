@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from tome.llm.client import ChatClient, LLMError
+from tome.names import TextVocabulary
 from tome.pack_writer import PackWriter
 from tome.text import word_count
 
-PROMPT_VERSION = "summaries-v3"
+PROMPT_VERSION = "summaries-v4"
 ROLLUP_EVERY = 5  # chapters between "story so far" checkpoints
 # About 8k tokens, which leaves room for the context and the reply in the
 # pod's default 16,384-token window.
@@ -53,6 +54,8 @@ class SummaryStats:
     llm_calls: int = 0
     truncated: int = 0  # replies cut off by the token limit
     rollups_skipped: int = 0  # never stored: a cut-off rollup would hide recent events
+    name_retries: int = 0  # replies regenerated for using names the text hasn't used yet
+    unseen_names: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float | None = None
@@ -81,6 +84,7 @@ class _Summarizer:
         self.client = client
         self.sleep = sleep
         self.stats = SummaryStats()
+        self.known = TextVocabulary()
 
     def _call(self, prompt: str, *, purpose: str, max_tokens: int) -> tuple[str, bool]:
         """One reply and whether the token limit cut it off, retrying transient errors."""
@@ -115,6 +119,30 @@ class _Summarizer:
         text, cut_off = self._call(shorter, purpose=purpose, max_tokens=max_tokens)
         return None if cut_off else text
 
+    def _checked(
+        self, prompt: str, *, purpose: str, max_tokens: int, words: int
+    ) -> tuple[str | None, list[str]]:
+        """A finished reply and any unseen names left in it, retrying once if it has some."""
+        text = self._complete(prompt, purpose=purpose, max_tokens=max_tokens, words=words)
+        names = self.known.unseen_names(text) if text else []
+        if not names:
+            return text, []
+        self.stats.name_retries += 1
+        stricter = (
+            f"{prompt}\n\nDo not use these words, which the text has not used at this point: "
+            f"{', '.join(names)}. Call people and places only what the text has called them."
+        )
+        retry = self._complete(stricter, purpose=purpose, max_tokens=max_tokens, words=words)
+        if retry is not None:
+            retry_names = self.known.unseen_names(retry)
+            if len(retry_names) < len(names):
+                return retry, retry_names
+        return text, names
+
+    def _note_unseen(self, where: str, names: list[str]) -> None:
+        if names:
+            self.stats.unseen_names[where] = names
+
     def chapter(
         self,
         label: str,
@@ -129,6 +157,7 @@ class _Summarizer:
         if recent:
             context.append("CHAPTERS SINCE THEN, IN ORDER:\n" + "\n\n".join(recent))
         draft = ""
+        names: list[str] = []
         for chunk in chunk_passages(passages, chunk_words):
             parts = list(context)
             if draft:
@@ -144,12 +173,13 @@ class _Summarizer:
                 "anything new the text states about a character or place."
             )
             prompt = "\n\n".join(parts)
-            reply = self._complete(
+            reply, names = self._checked(
                 prompt, purpose="chapter_summary", max_tokens=CHAPTER_MAX_TOKENS, words=120
             )
             if reply is None:
                 raise LLMError(f"summary of {label} was cut off twice")
             draft = reply
+        self._note_unseen(label, names)
         return draft
 
     def story_so_far(
@@ -166,16 +196,22 @@ class _Summarizer:
             "each major event a sentence or less. Keep what a returning reader needs: main "
             "events, who is who, and what is unresolved at this point."
         )
-        return self._complete(
+        text, names = self._checked(
             "\n\n".join(parts), purpose="story_so_far", max_tokens=ROLLUP_MAX_TOKENS, words=200
         )
+        self._note_unseen(f"story so far through {label}", names)
+        return text
 
     def book_recap(self, title: str, summaries: Sequence[str]) -> str | None:
         prompt = (
             f"CHAPTER SUMMARIES OF {title}, IN ORDER:\n" + "\n\n".join(summaries) + "\n\n"
             "Write a recap of this book in at most 400 words, for a reader starting the next one."
         )
-        return self._complete(prompt, purpose="book_recap", max_tokens=ROLLUP_MAX_TOKENS, words=200)
+        text, names = self._checked(
+            prompt, purpose="book_recap", max_tokens=ROLLUP_MAX_TOKENS, words=200
+        )
+        self._note_unseen(f"recap of {title}", names)
+        return text
 
 
 def summarize_pack(
@@ -217,6 +253,7 @@ def summarize_pack(
             "SELECT * FROM chapters WHERE book_id=? ORDER BY start_pos", (book["book_id"],)
         ).fetchall()
         book_summaries: list[str] = []
+        s.known.add(book["title"])
         for chapter in chapters:
             done += 1
             stopping = max_chapters is not None and done >= max_chapters
@@ -229,6 +266,9 @@ def summarize_pack(
                     (chapter["chapter_id"],),
                 )
             ]
+            s.known.add(chapter["title"])
+            for passage in passages:
+                s.known.add(passage)
             summary = s.chapter(label, story, recent, passages, chunk_words)
             w.add_chapter_summary(
                 chapter_id=chapter["chapter_id"], summary_text=summary, run_id=run
