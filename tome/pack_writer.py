@@ -135,6 +135,20 @@ class PackWriter:
         self.conn.execute("UPDATE books SET end_pos=? WHERE book_id=?", (end, book_id))
         return book_id
 
+    def add_parsed(self, results) -> int:
+        """Add parsed EPUBs, ``[(path, ParseResult)]`` in reading order, as one parse run.
+
+        Returns the number of books.
+        """
+        run = self.start_run("parse", params={"epubs": [e.name for e, _ in results]})
+        number = 0
+        for epub, result in results:
+            for book in result.book_texts(source_file=epub.name):
+                number += 1
+                self.add_book(number, book)
+        self.finish_run(run, stats={"books": number})
+        return number
+
     def _add_chapter(self, book_id: int, number: int, chapter: ChapterText) -> int:
         texts = [clean_paragraphs(t) for t in chapter.passages if clean(t)]
         if not texts:

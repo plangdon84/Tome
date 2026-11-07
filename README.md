@@ -51,6 +51,7 @@ uv run tome llm smoke                    # one cheap call via OpenRouter
 uv run tome ingest corpus/oz-1.epub --series oz --out data/oz-1.tome \
     --provider vllm-local --model Qwen/Qwen2.5-7B-Instruct   # summaries; needs an LLM
 uv run tome recap --pack data/oz-1.tome --at "b1 ch7"        # story so far, no LLM
+uv run tome compare --target oz --target monte-cristo        # model comparison, Stage A
 ```
 
 Layout:
@@ -64,6 +65,7 @@ Layout:
 | `tome/llm/` | OpenAI-compatible client, provider presets, per-series provider policy |
 | `tome/embed.py` | The pinned embedding model (bge-small-en-v1.5, ONNX) |
 | `tome/evals/`, `evals/` | Eval runner, stub pack, public Monte Cristo cases, private templates |
+| `tome/compare.py` | Model comparison, Stage A: summary packs per model, evals and a judge's support check |
 | `series/` | Per-series config: rights and allowed LLM providers |
 
 LLM credentials: OpenRouter uses `OPENROUTER_API_KEY` when set. In Claude Code
