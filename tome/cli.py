@@ -101,38 +101,108 @@ def pack_build_text(
 
     results = [(e, parse_epub(e, Layout.for_epub(e, layout))) for e in epubs]
     w = PackWriter(out, pack_id=series, series_title=title or results[0][1].title, overwrite=force)
-    run = w.start_run("parse", params={"epubs": [e.name for e in epubs]})
+    number = _add_books(w, results)
+    embedding_model_id = _embed_passages(w) if embed else None
+    content_hash = w.finalize(embedding_model_id=embedding_model_id)
+    w.close()
+    typer.echo(f"wrote {out} ({number} book(s), content hash {content_hash[:12]})")
+
+
+def _add_books(w, results) -> int:
+    """Add parsed EPUBs in reading order. Returns the number of books."""
+    run = w.start_run("parse", params={"epubs": [e.name for e, _ in results]})
     number = 0
     for epub, result in results:
         for book in result.book_texts(source_file=epub.name):
             number += 1
             w.add_book(number, book)
-    embedding_model_id = None
-    if embed:
-        from tome.embed import OnnxEmbedder, to_blob
-
-        embedder = OnnxEmbedder()
-        rows = w.conn.execute("SELECT passage_id, pos, text FROM passages ORDER BY pos").fetchall()
-        started = time.monotonic()
-        vecs = embedder.embed_passages([r["text"] for r in rows])
-        erun = w.start_run("embed", params={"model": embedder.model_id})
-        w.add_embeddings(
-            (
-                (("passages", r["passage_id"], to_blob(v), r["pos"]))
-                for r, v in zip(rows, vecs, strict=True)
-            ),
-            model_id=embedder.model_id,
-            dim=embedder.dim,
-            run_id=erun,
-        )
-        w.finish_run(
-            erun, stats={"passages": len(rows), "seconds": round(time.monotonic() - started, 1)}
-        )
-        embedding_model_id = embedder.model_id
     w.finish_run(run, stats={"books": number})
-    content_hash = w.finalize(embedding_model_id=embedding_model_id)
+    return number
+
+
+def _embed_passages(w) -> str:
+    """Embed every passage with the pinned model. Returns the model id."""
+    from tome.embed import OnnxEmbedder, to_blob
+
+    embedder = OnnxEmbedder()
+    rows = w.conn.execute("SELECT passage_id, pos, text FROM passages ORDER BY pos").fetchall()
+    started = time.monotonic()
+    vecs = embedder.embed_passages([r["text"] for r in rows])
+    run = w.start_run("embed", params={"model": embedder.model_id})
+    w.add_embeddings(
+        (
+            ("passages", r["passage_id"], to_blob(v), r["pos"])
+            for r, v in zip(rows, vecs, strict=True)
+        ),
+        model_id=embedder.model_id,
+        dim=embedder.dim,
+        run_id=run,
+    )
+    w.finish_run(
+        run, stats={"passages": len(rows), "seconds": round(time.monotonic() - started, 1)}
+    )
+    return embedder.model_id
+
+
+@app.command()
+def ingest(
+    epubs: list[Path] = typer.Argument(..., help="EPUB files in reading order."),
+    series: str = typer.Option(..., help="Series id: a TOML file in series/ or library/series/."),
+    out: Path = typer.Option(..., help="Pack file to write."),
+    provider: str = typer.Option(..., help="LLM provider the series allows, e.g. vllm-local."),
+    model: str | None = typer.Option(None, help="Model id (default: the provider's)."),
+    layout: Path | None = typer.Option(None, help="Layout TOML (applies to every EPUB)."),
+    embed: bool = typer.Option(False, help="Embed passages with the pinned model."),
+    rollup_every: int = typer.Option(5, help='Chapters between "story so far" checkpoints.'),
+    max_chapters: int | None = typer.Option(None, help="Stop after this many, for a trial run."),
+    force: bool = typer.Option(False, help="Overwrite an existing pack."),
+):
+    """Build a pack with chapter summaries, book recaps and "story so far" rollups."""
+    from tome.epub.parse import Layout, parse_epub
+    from tome.llm.client import ChatClient
+    from tome.llm.providers import get_provider
+    from tome.pack_writer import PackWriter
+    from tome.series import Series
+    from tome.summarize import summarize_pack
+
+    if out.exists() and not force:
+        raise typer.BadParameter(f"{out} exists; pass --force to overwrite it")
+    series_cfg = Series.find(series)
+    # Checks the provider policy before any book text is read.
+    client = ChatClient(get_provider(provider), series_cfg, model=model, timeout=600.0)
+    results = [(e, parse_epub(e, Layout.for_epub(e, layout))) for e in epubs]
+    # A failed run never leaves something that looks like a finished pack at --out.
+    partial = out.with_name(out.name + ".partial")
+    w = PackWriter(partial, pack_id=series_cfg.id, series_title=series_cfg.title, overwrite=True)
+    number = _add_books(w, results)
+    stats = summarize_pack(
+        w,
+        client,
+        rollup_every=rollup_every,
+        max_chapters=max_chapters,
+        log=lambda msg: typer.echo(msg, err=True),
+    )
+    embedding_model_id = _embed_passages(w) if embed else None
+    content_hash = w.finalize(llm_model=client.model, embedding_model_id=embedding_model_id)
     w.close()
-    typer.echo(f"wrote {out} ({number} book(s), content hash {content_hash[:12]})")
+    client.close()
+    partial.replace(out)
+    cost = "unknown" if stats.cost_usd is None else f"${stats.cost_usd:.4f}"
+    typer.echo(
+        f"wrote {out} ({number} book(s), {stats.chapters} chapter summaries, "
+        f"{stats.story_so_far} story-so-far, {stats.book_recaps} book recap(s), "
+        f"content hash {content_hash[:12]})"
+    )
+    typer.echo(
+        f"{stats.llm_calls} calls, {stats.prompt_tokens}+{stats.completion_tokens} tokens, "
+        f"cost {cost}"
+    )
+    if stats.truncated or stats.rollups_skipped:
+        typer.echo(
+            f"warning: {stats.truncated} replies hit the token limit; "
+            f"{stats.rollups_skipped} rollups were skipped",
+            err=True,
+        )
 
 
 @pack_app.command("info")
@@ -182,6 +252,32 @@ def ask(question: str, pack: Path = typer.Option(...), at: str = typer.Option(..
         typer.echo("Nothing found up to this point.")
     for piece in ans.pieces:
         typer.echo(f"- [{piece.kind}] {piece.text}")
+
+
+@app.command()
+def recap(
+    pack: Path = typer.Option(...),
+    at: str = typer.Option(..., help='Horizon, e.g. "b2 ch1" (finished chapter 1 of book 2).'),
+    book: int | None = typer.Option(None, help="Show this finished book's recap instead."),
+):
+    """Recap what you have read so far (no LLM)."""
+    from tome.answer import recap_pieces
+
+    with _reader(pack, at) as r:
+        if book is not None:
+            row = r.book_recap(book)
+            typer.echo(row["text"] if row else f"No recap of book {book} up to this point.")
+            return
+        pieces = recap_pieces(r)
+        if not pieces:
+            has_summaries = r.query("SELECT 1 FROM runs WHERE kind = 'summaries' LIMIT 1")
+            typer.echo(
+                "Nothing to recap up to this point."
+                if has_summaries
+                else "This pack has no summaries; build it with `tome ingest`."
+            )
+        for piece in pieces:
+            typer.echo(f"{piece.text}\n")
 
 
 # -------------------------------------------------------------------- eval --

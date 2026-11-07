@@ -48,6 +48,9 @@ uv run tome eval init-private            # private eval templates -> library/eva
 uv run tome eval check --pack data/monte-cristo.tome \
     --cases evals/public/monte-cristo   # cases vs the real text
 uv run tome llm smoke                    # one cheap call via OpenRouter
+uv run tome ingest corpus/oz-1.epub --series oz --out data/oz-1.tome \
+    --provider vllm-local --model Qwen/Qwen2.5-7B-Instruct   # summaries; needs an LLM
+uv run tome recap --pack data/oz-1.tome --at "b1 ch7"        # story so far, no LLM
 ```
 
 Layout:

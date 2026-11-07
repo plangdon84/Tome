@@ -381,18 +381,33 @@ class HorizonReader:
         )
 
     # -- summaries and anticipated Q&A --
-    def chapter_summaries(self, limit: int | None = None) -> list[sqlite3.Row]:
+    def chapter_summaries(
+        self, limit: int | None = None, *, since_pos: int = 0
+    ) -> list[sqlite3.Row]:
         sql = (
-            "SELECT s.*, c.number AS chapter_number, c.title AS chapter_title"
+            "SELECT s.*, c.number AS chapter_number, c.title AS chapter_title,"
+            " b.number AS book_number"
             " FROM h_chapter_summaries s JOIN h_chapters c USING (chapter_id)"
+            " JOIN books b USING (book_id)"
+            " WHERE s.max_source_pos > ?"
             " ORDER BY s.max_source_pos DESC"
         )
-        rows = self.query(sql + (" LIMIT ?" if limit else ""), (limit,) if limit else ())
+        params = (since_pos, limit) if limit else (since_pos,)
+        rows = self.query(sql + (" LIMIT ?" if limit else ""), params)
         return list(reversed(rows))
 
     def latest_rollup(self, kind: str = "story_so_far") -> sqlite3.Row | None:
         return self.one(
             "SELECT * FROM h_rollups WHERE kind = ? ORDER BY max_source_pos DESC LIMIT 1", (kind,)
+        )
+
+    def book_recap(self, book_number: int) -> sqlite3.Row | None:
+        """A finished book's recap. Not visible until the reader has finished that book."""
+        return self.one(
+            "SELECT r.* FROM h_rollups r JOIN books b USING (book_id)"
+            " WHERE r.kind = 'book' AND b.number = ?"
+            " ORDER BY r.max_source_pos DESC LIMIT 1",
+            (book_number,),
         )
 
     def anticipated_qa(self) -> list[sqlite3.Row]:
