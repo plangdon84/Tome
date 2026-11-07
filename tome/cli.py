@@ -197,6 +197,8 @@ def ingest(
         f"{stats.llm_calls} calls, {stats.prompt_tokens}+{stats.completion_tokens} tokens, "
         f"cost {cost}"
     )
+    for where, names in stats.unseen_names.items():
+        typer.echo(f"warning: {where} uses names not in the text yet: {', '.join(names)}", err=True)
     if stats.truncated or stats.rollups_skipped:
         typer.echo(
             f"warning: {stats.truncated} replies hit the token limit; "

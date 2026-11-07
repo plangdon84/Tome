@@ -61,7 +61,7 @@ def _writer(tmp_path, books=2, chapters=3, name="p.tome") -> PackWriter:
     w = PackWriter(tmp_path / name, pack_id="t", series_title="T")
     for b in range(1, books + 1):
         chs = [
-            ChapterText(f"Ch {c}", [f"b{b}c{c}marker " + words(20, "w")])
+            ChapterText(f"Ch {c}", [f"b{b}c{c}marker reply a summary whole " + words(20, "w")])
             for c in range(1, chapters + 1)
         ]
         w.add_book(b, BookText(f"Book {b}", chs))
@@ -123,7 +123,7 @@ def test_rollups_land_on_checkpoints_and_book_ends(tmp_path):
 def test_long_chapter_is_chunked_with_a_running_draft(tmp_path):
     server = Recorder()
     w = PackWriter(tmp_path / "p.tome", pack_id="t", series_title="T")
-    passages = [f"part{i} " + words(60, "w") for i in range(3)]
+    passages = [f"part{i} reply " + words(60, "w") for i in range(3)]
     w.add_book(1, BookText("B", [ChapterText("C", passages)]))
     summarize_pack(w, _mock_client(server), chunk_words=70)
     assert w.conn.execute("SELECT count(*) FROM chapter_summaries").fetchone()[0] == 1
@@ -415,3 +415,57 @@ def test_recap_explains_a_parse_only_pack(tmp_path):
     w.close()
     out = CliRunner().invoke(cli.app, ["recap", "--pack", str(path), "--at", "b1 ch1"])
     assert "no summaries" in out.output
+
+
+def _names_writer(tmp_path) -> PackWriter:
+    w = PackWriter(tmp_path / "names.tome", pack_id="t", series_title="T")
+    w.add_book(1, BookText("Book", [ChapterText("One", ["Dorothy met a gale of wind."])]))
+    return w
+
+
+def test_unseen_name_regenerates_with_the_name_forbidden(tmp_path):
+    prompts = []
+
+    def handler(request):
+        prompt = json.loads(request.content)["messages"][-1]["content"]
+        prompts.append(prompt)
+        return _reply("Dorothy met a wind." if "Do not use" in prompt else "Dorothy Gale met.")
+
+    w = _names_writer(tmp_path)
+    stats = summarize_pack(w, _mock_client(handler))
+    summary = w.conn.execute("SELECT summary_text FROM chapter_summaries").fetchone()[0]
+    w.close()
+    assert summary == "Dorothy met a wind."
+    assert "Do not use these words, which the text has not used at this point: Gale" in prompts[1]
+    assert stats.unseen_names == {}
+    assert stats.name_retries == 3  # the chapter, the rollup and the recap
+
+
+def test_name_that_survives_the_retry_is_reported(tmp_path):
+    w = _names_writer(tmp_path)
+    stats = summarize_pack(w, _mock_client(lambda _r: _reply("Dorothy Gale met.")))
+    w.close()
+    assert stats.unseen_names == {
+        "BOOK 1, CHAPTER 1 (One)": ["Gale"],
+        "story so far through BOOK 1, CHAPTER 1 (One)": ["Gale"],
+        "recap of Book": ["Gale"],
+    }
+    assert stats.llm_calls == 6
+
+
+def test_name_used_by_an_earlier_chapter_is_allowed_later(tmp_path):
+    w = PackWriter(tmp_path / "later.tome", pack_id="t", series_title="T")
+    chapters = [ChapterText("One", ["Dorothy left."]), ChapterText("Two", ["Toto barked."])]
+    w.add_book(1, BookText("Book", chapters))
+    replies = iter(
+        ["Dorothy left, and Toto barked.", "Dorothy left.", "Dorothy left, and Toto barked."]
+    )
+
+    def handler(_request):
+        return _reply(next(replies, "Dorothy left, and Toto barked."))
+
+    stats = summarize_pack(w, _mock_client(handler))
+    w.close()
+    # The first reply names Toto a chapter early, so it is regenerated. Later ones may name Toto.
+    assert stats.name_retries == 1
+    assert stats.unseen_names == {}
