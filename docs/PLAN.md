@@ -153,7 +153,12 @@ this?" questions.
 - [ ] Compare open-model sizes (about 8–14B vs about 70B) for summary quality
   on 12 chapters (three windows of 4 consecutive chapters), in two stages:
   automated on public domain via OpenRouter, then judged by you on
-  HP/Cradle on the pod. See DECISIONS.md §12.
+  HP/Cradle on the pod. See DECISIONS.md §12. *Stage A done 2026-11-07
+  (`tome compare`, [results](results/model-comparison-stage-a.md)): Qwen 2.5
+  7B against 72B on Oz 1–2 and Monte Cristo ch 1–34. No summary leaks for
+  either model. The 72B model had 15 vs 34 contradicted sentences on Oz and 7 vs 36
+  on Monte Cristo, and a 7B error carried through four rollups in a row.
+  Coverage was a wash. Stage B is next.*
 
 **Gate:** recaps are accurate and spoiler-free. Search returns the right
 passages for "where have I seen X?"
