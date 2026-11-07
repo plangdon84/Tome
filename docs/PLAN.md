@@ -127,8 +127,14 @@ this?" questions.
   - Splitting chapters into passages of about 150–400 words, each with a
     `pos`.
 - [x] Indexes: FTS5 plus passage embeddings *(done early: `tome pack build-text --embed`)*.
-- [ ] Rolling chapter summaries, book recaps, and "story so far" rollups.
-- [ ] CLI:
+- [x] Rolling chapter summaries, book recaps, and "story so far" rollups.
+  *(`tome/summarize.py`. Chapters run one at a time in reading order, with each
+  rollup rebuilt from all of its book's chapter summaries. Oz book 1 compiled
+  live 2026-11-07 with `Qwen/Qwen2.5-7B-Instruct`: no leaks in the 4 book 1
+  spoiler cases, and all 5 book 1 coverage cases passed. The 7B model still makes
+  factual slips and used outside knowledge once ("Dorothy Gale"), so the Gate
+  below stays open until the model comparison. No resume after a failed run yet.)*
+- [x] CLI:
   - `tome ingest`
   - `tome search --at "b3 ch10" "scabbers"` *(exists: keyword search, horizon-filtered)*
   - `tome recap --at "b2 ch1"`
@@ -136,8 +142,8 @@ this?" questions.
   file, destroy the pod. *(`scripts/gpu_pod.py`, with a self-terminate timer and
   SSH open to one IP only. The full `run` passed 2026-11-06 on `g5.xlarge` in
   us-east-1: vLLM served `Qwen/Qwen2.5-7B-Instruct`, `tome llm smoke` succeeded,
-  and a `build-text` Oz pack came back. It has not run `tome ingest`, which does
-  not exist yet. `g6.xlarge` and `g6e.xlarge` have not launched: AWS Support
+  and a `build-text` Oz pack came back. `tome ingest` ran on it 2026-11-07, on
+  `g5.xlarge` and `g6.xlarge`. `g6e.xlarge` has not launched: AWS Support
   (case 179270307500931) confirmed a real capacity shortage, not an account
   limit, so retry launches hourly across us-east-1 and us-east-2.)*
 - [ ] Compare open-model sizes (about 8–14B vs about 70B) for summary quality

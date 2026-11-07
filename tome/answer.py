@@ -124,6 +124,17 @@ def _content_words(text: str) -> set[str]:
     return {w for w in words(text) if w not in STOPWORDS}
 
 
+def recap_pieces(reader: HorizonReader) -> list[Piece]:
+    """The latest "story so far", then a summary of each finished chapter after it."""
+    rollup = reader.latest_rollup()
+    pieces = [Piece("rollup", rollup["text"], rollup["max_source_pos"])] if rollup else []
+    since = rollup["max_source_pos"] if rollup else 0
+    for s in reader.chapter_summaries(since_pos=since):
+        label = f"b{s['book_number']} ch{s['chapter_number']}, {s['chapter_title']}: "
+        pieces.append(Piece("summary", label + s["summary_text"], s["max_source_pos"]))
+    return pieces
+
+
 def answer(reader: HorizonReader, question: str, *, max_passages: int = 3) -> Answer:
     pieces: list[Piece] = []
     speculative = is_speculative(question)
@@ -143,11 +154,7 @@ def answer(reader: HorizonReader, question: str, *, max_passages: int = 3) -> An
             pieces.extend(_entity_pieces(reader, eid, speculative=speculative))
 
     if RECAP_RE.search(question) and not matched:
-        rollup = reader.latest_rollup()
-        if rollup:
-            pieces.append(Piece("rollup", rollup["text"], rollup["max_source_pos"]))
-        for s in reader.chapter_summaries(limit=3):
-            pieces.append(Piece("summary", s["summary_text"], s["max_source_pos"]))
+        pieces.extend(recap_pieces(reader))
 
     q_words = _content_words(question)
     for qa in reader.anticipated_qa():
