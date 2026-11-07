@@ -538,6 +538,7 @@ def test_an_unsupported_sentence_is_fixed_in_place(tmp_path):
     fix = next(p for p in prompts if "This sentence from a summary" in p)
     assert "“She casts a spell.”" in fix and "The problem: plan only" in fix
     assert (stats.rollup_retries, stats.rollup_fixed, stats.unsupported) == (2, 2, {})
+    assert stats.fixes["recap of Book 1"] == [["She casts a spell.", "She plans a spell."]]
     # Each rollup and each fix is checked, against the chapter summaries, never the text.
     assert stats.rollup_checks == 4
     assert all("b1c1marker" not in c and "She plans a spell. He runs." in c for c in checks)

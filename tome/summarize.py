@@ -107,6 +107,7 @@ class SummaryStats:
     rollup_checks: int = 0
     rollup_retries: int = 0  # rollups with sentences the check judged unsupported
     rollup_fixed: int = 0  # sentences replaced by a rewrite that passed the check
+    fixes: dict[str, list[list[str]]] = field(default_factory=dict)  # where -> [[old, new]]
     rollup_check_errors: int = 0  # checks with no usable reply; the rollup is kept as is
     unsupported: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
     prompt_tokens: int = 0
@@ -277,8 +278,10 @@ class _Summarizer:
             verdict = self._unsupported(notes, [fixes[i] for i in order])
             if verdict is not None:
                 passed = {i for k, i in enumerate(order) if k not in verdict}
-        for i in passed:
+        for i in sorted(passed):
             text = text.replace(sents[i], fixes[i], 1)
+        if passed:
+            self.stats.fixes[where] = [[sents[i], fixes[i]] for i in sorted(passed)]
         self.stats.rollup_fixed += len(passed)
         left = [sents[i] for i in sorted(bad) if i not in passed]
         if left:
