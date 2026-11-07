@@ -281,6 +281,10 @@ class Score:
     rollups_skipped: int = 0
     name_retries: int = 0
     unseen_names: dict[str, list[str]] = field(default_factory=dict)
+    rollup_checks: int = 0
+    rollup_retries: int = 0
+    rollup_check_errors: int = 0
+    unsupported: dict[str, list[str]] = field(default_factory=dict)  # left after the rewrite
     leaks: int = 0
     spoiler_cases: int = 0
     leaked: list[str] = field(default_factory=list)
@@ -312,6 +316,7 @@ def score_pack(target: Target, model: str, pack: Path, judgments: Sequence[Judgm
     for name in (
         "chapters", "llm_calls", "prompt_tokens", "completion_tokens", "cost_usd",
         "truncated", "rollups_skipped", "name_retries", "unseen_names",
+        "rollup_checks", "rollup_retries", "rollup_check_errors", "unsupported",
     ):  # fmt: skip
         setattr(s, name, stats.get(name, getattr(s, name)))
     report = run_eval(pack, load_cases(target.cases))
@@ -459,6 +464,10 @@ def format_report(scores: Sequence[Score], judge_model: str) -> str:
             row(f"Flagged: {problem}", lambda s, p=problem: str(s.problems(p)))
         row("Judge errors", lambda s: str(s.judge_errors))
         row("Unseen-name retries / left", lambda s: f"{s.name_retries} / {len(s.unseen_names)}")
+        row(
+            "Rollup self-checks: rewrites / still flagged / failed",
+            lambda s: f"{s.rollup_retries} / {len(s.unsupported)} / {s.rollup_check_errors}",
+        )
         row("Cut-off replies / skipped rollups", lambda s: f"{s.truncated} / {s.rollups_skipped}")
         row("Tokens in + out", lambda s: f"{s.prompt_tokens:,} + {s.completion_tokens:,}")
         row("Cost (summaries)", lambda s: "n/a" if s.cost_usd is None else f"${s.cost_usd:.4f}")

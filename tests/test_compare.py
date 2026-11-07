@@ -44,6 +44,7 @@ def _pack(tmp_path, books=2, chapters=3):
             for c in range(1, chapters + 1)
         ]
         w.add_book(b, BookText(f"Book {b}", chs))
+
     def server(request):
         prompt = json.loads(request.content)["messages"][-1]["content"]
         marker = prompt.rsplit("TEXT OF ", 1)[-1]

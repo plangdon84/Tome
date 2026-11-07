@@ -11,22 +11,24 @@ tell the model to ignore anything it remembers about the book.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 
-from tome.llm.client import ChatClient, LLMError
+from tome.llm.client import ChatClient, LLMError, StructuredOutputError
 from tome.names import TextVocabulary
 from tome.pack_writer import PackWriter
 from tome.text import word_count
 
-PROMPT_VERSION = "summaries-v4"
+PROMPT_VERSION = "summaries-v5"
 ROLLUP_EVERY = 5  # chapters between "story so far" checkpoints
 # About 8k tokens, which leaves room for the context and the reply in the
 # pod's default 16,384-token window.
 CHUNK_WORDS = 6000
 CHAPTER_MAX_TOKENS = 700
 ROLLUP_MAX_TOKENS = 1100
+CHECK_MAX_TOKENS = 1500
 CALL_ATTEMPTS = 3
 RETRY_DELAY_S = 5.0
 
@@ -46,6 +48,40 @@ says a person's identity is unknown, leave it unknown.
 itself: never mention chapters, "the text" or what it does or does not reveal."""
 
 
+# The rollup check: the same model reads a rollup next to the chapter summaries
+# it was built from. A rollup is where a plan turns into a deed ("Mombi
+# transforms Tip" for "Mombi plans to"), and once one holds an invented fact
+# every later rollup copies it.
+CHECK_SYSTEM = """You check a summary against the notes it was written from. Flag every \
+sentence of the SUMMARY that the NOTES contradict, or that states something the NOTES don't \
+say: a different person doing something, a plan or threat told as if it happened, a wrong \
+order of events, or a detail the notes never give. Rewording, shortening and leaving things \
+out are fine. Copy each flagged sentence exactly. If nothing is wrong, return an empty list."""
+CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "flags": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sentence": {"type": "string"},
+                    "correction": {"type": "string"},
+                },
+                "required": ["sentence", "correction"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["flags"],
+    "additionalProperties": False,
+}
+
+
+def _norm(text: str) -> str:
+    return " ".join(re.sub(r"[“”]", '"', re.sub(r"[‘’]", "'", text)).split())
+
+
 @dataclass
 class SummaryStats:
     chapters: int = 0
@@ -56,6 +92,10 @@ class SummaryStats:
     rollups_skipped: int = 0  # never stored: a cut-off rollup would hide recent events
     name_retries: int = 0  # replies regenerated for using names the text hasn't used yet
     unseen_names: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
+    rollup_checks: int = 0
+    rollup_retries: int = 0  # rollups rewritten because the check flagged sentences
+    rollup_check_errors: int = 0  # checks with no usable reply; the rollup is kept as is
+    unsupported: dict[str, list[str]] = field(default_factory=dict)  # stored despite a retry
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cost_usd: float | None = None
@@ -139,6 +179,75 @@ class _Summarizer:
                 return retry, retry_names
         return text, names
 
+    def _flags(self, notes: str, summary: str) -> list[dict] | None:
+        """Sentences of ``summary`` its notes don't support. None if the check failed."""
+        messages = [
+            {"role": "system", "content": CHECK_SYSTEM},
+            {"role": "user", "content": f"NOTES:\n{notes}\n\nSUMMARY:\n{summary}"},
+        ]
+        usage = self.client.usage
+        before = len(usage.records)
+        try:
+            out = self.client.structured(
+                messages, CHECK_SCHEMA, name="rollup_check", purpose="rollup_check",
+                max_tokens=CHECK_MAX_TOKENS,
+            )  # fmt: skip
+        except (StructuredOutputError, LLMError):
+            out = None
+        finally:
+            s = self.stats
+            for r in usage.records[before:]:
+                s.llm_calls += 1
+                s.prompt_tokens += r.prompt_tokens
+                s.completion_tokens += r.completion_tokens
+                if r.cost_usd is not None:
+                    s.cost_usd = (s.cost_usd or 0.0) + r.cost_usd
+        self.stats.rollup_checks += 1
+        if out is None:
+            self.stats.rollup_check_errors += 1
+            return None
+        text, seen, flags = _norm(summary), set(), []
+        for flag in out["flags"]:
+            sentence = flag["sentence"].strip()
+            if sentence and sentence not in seen and _norm(sentence) in text:
+                seen.add(sentence)
+                flags.append({"sentence": sentence, "correction": flag["correction"].strip()})
+        return flags
+
+    def _rollup(
+        self, prompt: str, notes: str, *, where: str, purpose: str, words: int
+    ) -> str | None:
+        """A rollup that passed the name check, then checked against its notes.
+
+        Flagged sentences get one rewrite, kept only if a second check flags fewer.
+        Sentences are never deleted: dropping one can drop the fact a reader needs.
+        """
+        text, names = self._checked(
+            prompt, purpose=purpose, max_tokens=ROLLUP_MAX_TOKENS, words=words
+        )
+        if text is None:
+            self._note_unseen(where, names)
+            return None
+        flags = self._flags(notes, text)
+        if flags:
+            self.stats.rollup_retries += 1
+            fixes = "\n".join(f"- “{f['sentence']}” {f['correction']}" for f in flags)
+            stricter = (
+                f"{prompt}\n\nA first draft had sentences the notes above don't support. "
+                f"Don't repeat these mistakes:\n{fixes}\nState only what the notes state."
+            )
+            retry, retry_names = self._checked(
+                stricter, purpose=purpose, max_tokens=ROLLUP_MAX_TOKENS, words=words
+            )
+            if retry is not None:
+                retry_flags = self._flags(notes, retry)
+                if retry_flags is not None and len(retry_flags) < len(flags):
+                    text, names, flags = retry, retry_names, retry_flags
+        if flags:
+            self.stats.unsupported[where] = [f["sentence"] for f in flags]
+        self._note_unseen(where, names)
+        return text
+
     def _note_unseen(self, where: str, names: list[str]) -> None:
         if names:
             self.stats.unseen_names[where] = names
@@ -196,22 +305,23 @@ class _Summarizer:
             "each major event a sentence or less. Keep what a returning reader needs: main "
             "events, who is who, and what is unresolved at this point."
         )
-        text, names = self._checked(
-            "\n\n".join(parts), purpose="story_so_far", max_tokens=ROLLUP_MAX_TOKENS, words=200
+        return self._rollup(
+            "\n\n".join(parts),
+            "\n\n".join(parts[:-1]),
+            where=f"story so far through {label}",
+            purpose="story_so_far",
+            words=200,
         )
-        self._note_unseen(f"story so far through {label}", names)
-        return text
 
     def book_recap(self, title: str, summaries: Sequence[str]) -> str | None:
+        notes = f"CHAPTER SUMMARIES OF {title}, IN ORDER:\n" + "\n\n".join(summaries)
         prompt = (
-            f"CHAPTER SUMMARIES OF {title}, IN ORDER:\n" + "\n\n".join(summaries) + "\n\n"
+            f"{notes}\n\n"
             "Write a recap of this book in at most 400 words, for a reader starting the next one."
         )
-        text, names = self._checked(
-            prompt, purpose="book_recap", max_tokens=ROLLUP_MAX_TOKENS, words=200
+        return self._rollup(
+            prompt, notes, where=f"recap of {title}", purpose="book_recap", words=200
         )
-        self._note_unseen(f"recap of {title}", names)
-        return text
 
 
 def summarize_pack(

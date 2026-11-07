@@ -16,17 +16,28 @@ from tome.llm.client import ChatClient, LLMError
 from tome.llm.providers import PRESETS
 from tome.pack_writer import BookText, ChapterText, PackWriter, ReadingOrderViolation
 from tome.series import Series
-from tome.summarize import chunk_passages, summarize_pack
+from tome.summarize import CHECK_SYSTEM, chunk_passages, summarize_pack
 
 SERIES = Series("t", "T", "public_domain", ("vllm-local",))
 
 
-def _mock_client(handler) -> ChatClient:
+def _is_check(request: httpx.Request) -> bool:
+    return json.loads(request.content)["messages"][0]["content"] == CHECK_SYSTEM
+
+
+def _mock_client(handler, check=None) -> ChatClient:
+    """``handler`` answers the summary calls. Rollup checks pass, unless ``check`` answers them."""
+
+    def route(request):
+        if _is_check(request):
+            return check(request) if check else _reply('{"flags": []}')
+        return handler(request)
+
     return ChatClient(
         PRESETS["vllm-local"],
         SERIES,
         model="m",
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
+        http=httpx.Client(transport=httpx.MockTransport(route)),
     )
 
 
@@ -117,7 +128,7 @@ def test_rollups_land_on_checkpoints_and_book_ends(tmp_path):
         ("book", 6),
     ]
     assert (stats.chapters, stats.story_so_far, stats.book_recaps) == (6, 4, 2)
-    assert stats.llm_calls == 12
+    assert stats.llm_calls == 18 and stats.rollup_checks == 6  # each rollup is checked
 
 
 def test_long_chapter_is_chunked_with_a_running_draft(tmp_path):
@@ -223,11 +234,11 @@ def test_usage_and_cost_reach_the_run_record(tmp_path):
     stats = summarize_pack(w, _mock_client(lambda request: _reply(cost=0.5)))
     run = w.conn.execute("SELECT * FROM runs WHERE kind='summaries'").fetchone()
     w.close()
-    # One chapter summary, one story so far, one book recap.
+    # One chapter summary, one story so far, one book recap, and a check of each rollup.
     assert stats.cost_usd == 1.5
     assert run["llm_model"] == "m" and run["prompt_version"]
-    assert (run["prompt_tokens"], run["completion_tokens"]) == (30, 15)
-    assert json.loads(run["stats_json"])["llm_calls"] == 3
+    assert (run["prompt_tokens"], run["completion_tokens"]) == (50, 25)
+    assert json.loads(run["stats_json"])["llm_calls"] == 5
 
 
 def _cut_off_when(condition):
@@ -450,7 +461,7 @@ def test_name_that_survives_the_retry_is_reported(tmp_path):
         "story so far through BOOK 1, CHAPTER 1 (One)": ["Gale"],
         "recap of Book": ["Gale"],
     }
-    assert stats.llm_calls == 6
+    assert stats.llm_calls == 8  # 6 summary calls and a check of each rollup
 
 
 def test_name_used_by_an_earlier_chapter_is_allowed_later(tmp_path):
@@ -469,3 +480,74 @@ def test_name_used_by_an_earlier_chapter_is_allowed_later(tmp_path):
     # The first reply names Toto a chapter early, so it is regenerated. Later ones may name Toto.
     assert stats.name_retries == 1
     assert stats.unseen_names == {}
+
+
+# ------------------------------------------------------------- rollup check --
+
+
+def _flag(sentence: str, correction: str = "The notes say she only plans to.") -> httpx.Response:
+    return _reply(json.dumps({"flags": [{"sentence": sentence, "correction": correction}]}))
+
+
+def _rollup_server(prompts, rewrite="She plans a spell."):
+    """Rollups claim a deed until a prompt lists corrections; chapter summaries are plain."""
+
+    def handler(request):
+        prompt = json.loads(request.content)["messages"][-1]["content"]
+        prompts.append(prompt)
+        if "CHAPTERS OF THIS BOOK SO FAR" in prompt or "recap of this book" in prompt:
+            if "Don't repeat these mistakes" in prompt:
+                return _reply(rewrite)
+            return _reply("She casts a spell. He runs.")
+        return _reply("She plans a spell. He runs.")
+
+    return handler
+
+
+def test_a_flagged_rollup_is_rewritten_with_the_corrections(tmp_path):
+    prompts, checks = [], []
+
+    def check(request):
+        notes = json.loads(request.content)["messages"][-1]["content"]
+        checks.append(notes)
+        summary = notes.rsplit("SUMMARY:\n", 1)[1]
+        return _flag("She casts a spell.") if "casts" in summary else _reply('{"flags": []}')
+
+    w = _writer(tmp_path, books=1, chapters=1)
+    stats = summarize_pack(w, _mock_client(_rollup_server(prompts), check))
+    texts = [r[0] for r in w.conn.execute("SELECT text FROM rollups ORDER BY rollup_id")]
+    w.close()
+    assert texts == ["She plans a spell.", "She plans a spell."]
+    retry = next(p for p in prompts if "Don't repeat these mistakes" in p)
+    assert "“She casts a spell.” The notes say she only plans to." in retry
+    assert (stats.rollup_checks, stats.rollup_retries, stats.unsupported) == (4, 2, {})
+    # The check reads the chapter summaries, never the book's text.
+    assert all("b1c1marker" not in c and "She plans a spell. He runs." in c for c in checks)
+
+
+def test_a_rewrite_that_is_no_better_is_dropped_and_reported(tmp_path):
+    w = _writer(tmp_path, books=1, chapters=1)
+    server = _rollup_server([], rewrite="She plans it. He runs.")
+    stats = summarize_pack(w, _mock_client(server, lambda _r: _flag("He runs.")))
+    texts = [r[0] for r in w.conn.execute("SELECT text FROM rollups ORDER BY rollup_id")]
+    w.close()
+    assert texts == ["She casts a spell. He runs."] * 2
+    assert stats.unsupported == {
+        "story so far through BOOK 1, CHAPTER 1 (Ch 1)": ["He runs."],
+        "recap of Book 1": ["He runs."],
+    }
+
+
+def test_flags_that_quote_nothing_in_the_rollup_are_ignored(tmp_path):
+    w = _writer(tmp_path, books=1, chapters=1)
+    stats = summarize_pack(w, _mock_client(_rollup_server([]), lambda _r: _flag("Not in it.")))
+    w.close()
+    assert stats.rollup_retries == 0 and stats.unsupported == {}
+
+
+def test_a_failed_check_keeps_the_rollup(tmp_path):
+    w = _writer(tmp_path, books=1, chapters=1)
+    stats = summarize_pack(w, _mock_client(_rollup_server([]), lambda _r: _reply("not json")))
+    n = w.conn.execute("SELECT count(*) FROM rollups").fetchone()[0]
+    w.close()
+    assert n == 2 and stats.rollup_check_errors == 2 and stats.rollup_retries == 0
