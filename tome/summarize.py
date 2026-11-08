@@ -29,8 +29,10 @@ CHUNK_WORDS = 6000
 CHAPTER_MAX_TOKENS = 700
 ROLLUP_MAX_TOKENS = 1100
 CHECK_MAX_TOKENS = 1500
-CALL_ATTEMPTS = 3
+# Shared hosts rate-limit in bursts (HTTP 429), so back off for up to ~4 minutes.
+CALL_ATTEMPTS = 6
 RETRY_DELAY_S = 5.0
+RETRY_MAX_DELAY_S = 60.0
 
 SYSTEM = """You write summaries for a spoiler-safe reading companion. The reader has read \
 only up to the point you are given.
@@ -111,7 +113,19 @@ class SummaryStats:
     unsupported: dict[str, list[str]] = field(default_factory=dict)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_tokens: int = 0  # part of completion_tokens; never stored in a summary
     cost_usd: float | None = None
+    hosts: dict[str, int] = field(default_factory=dict)  # calls per serving host, if known
+
+    def count(self, prompt: int, completion: int, reasoning: int, cost, host) -> None:
+        self.llm_calls += 1
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.reasoning_tokens += reasoning
+        if cost is not None:
+            self.cost_usd = (self.cost_usd or 0.0) + cost
+        if host:
+            self.hosts[host] = self.hosts.get(host, 0) + 1
 
 
 def chunk_passages(passages: Sequence[str], max_words: int = CHUNK_WORDS) -> list[list[str]]:
@@ -151,13 +165,12 @@ class _Summarizer:
             except LLMError:
                 if attempt == CALL_ATTEMPTS:
                     raise
-                self.sleep(RETRY_DELAY_S * attempt)
+                self.sleep(min(RETRY_DELAY_S * 2 ** (attempt - 1), RETRY_MAX_DELAY_S))
         s = self.stats
-        s.llm_calls += 1
-        s.prompt_tokens += result.prompt_tokens
-        s.completion_tokens += result.completion_tokens
-        if result.cost_usd is not None:
-            s.cost_usd = (s.cost_usd or 0.0) + result.cost_usd
+        s.count(
+            result.prompt_tokens, result.completion_tokens, result.reasoning_tokens,
+            result.cost_usd, result.host,
+        )  # fmt: skip
         cut_off = result.raw["choices"][0].get("finish_reason") == "length"
         if cut_off:
             s.truncated += 1
@@ -204,13 +217,10 @@ class _Summarizer:
         except LLMError:  # includes StructuredOutputError
             return None
         finally:
-            st = self.stats
             for r in usage.records[before:]:
-                st.llm_calls += 1
-                st.prompt_tokens += r.prompt_tokens
-                st.completion_tokens += r.completion_tokens
-                if r.cost_usd is not None:
-                    st.cost_usd = (st.cost_usd or 0.0) + r.cost_usd
+                self.stats.count(
+                    r.prompt_tokens, r.completion_tokens, r.reasoning_tokens, r.cost_usd, r.host
+                )
 
     def _unsupported(self, notes: str, sents: Sequence[str]) -> dict[int, str] | None:
         """{index: why} for the sentences the notes don't state. None if the check failed."""

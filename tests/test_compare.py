@@ -5,7 +5,19 @@ import json
 import httpx
 from conftest import words
 
-from tome.compare import Target, format_report, judge, judge_items, judge_pack, score_pack
+from tome.compare import (
+    HOSTS,
+    JUDGE_MODEL,
+    LARGE_CANDIDATES,
+    SMALL_CANDIDATES,
+    Item,
+    Target,
+    format_report,
+    judge,
+    judge_items,
+    judge_pack,
+    score_pack,
+)
 from tome.llm.client import ChatClient
 from tome.llm.providers import PRESETS
 from tome.pack_writer import BookText, ChapterText, PackWriter
@@ -128,4 +140,48 @@ def test_score_and_report(tmp_path):
     assert s.support_rate("chapter") == 5 / 6 and s.support_rate("book") == 1.0
     report = format_report([s], "judge")
     assert "| Spoiler leaks | 0/1 |" in report
+    assert "| Hosts (summaries) | n/a |" in report
     assert "**contradicted** (b1-ch2): “Summary of b1c2.” wrong" in report
+
+
+def test_judge_retries_a_failed_call():
+    replies = iter([httpx.Response(429, text="rate limited"), _reply('{"flags": []}')])
+    item = Item("b1-ch1", "chapter", 1, 1, "One. Two.", "inputs")
+    slept = []
+    j = judge(_client(lambda r: next(replies)), item, sleep=slept.append)
+    assert j.error is None and j.sentences == 2 and len(slept) == 1
+
+
+def test_every_candidate_has_a_pinned_host():
+    for model in (*SMALL_CANDIDATES, *LARGE_CANDIDATES, JUDGE_MODEL):
+        assert HOSTS[model]
+
+
+def test_a_failed_pack_does_not_lose_the_others(tmp_path, monkeypatch):
+    import shutil
+
+    import pytest
+
+    from tome import compare
+
+    good = _pack(tmp_path)
+    cases = tmp_path / "cases.jsonl"
+    cases.write_text("")
+    monkeypatch.setattr(compare, "TARGETS", {"t": Target("t", "t", (), str(cases))})
+    monkeypatch.setattr(compare.Series, "find", staticmethod(lambda _name: SERIES))
+
+    def build(target, client, out, **_kw):
+        if client.model == "bad":
+            raise compare.LLMError("rate limited")
+        shutil.copy(good, out)
+
+    monkeypatch.setattr(compare, "build_pack", build)
+    out = tmp_path / "out"
+    with pytest.raises(compare.ComparisonFailed) as exc:
+        compare.run_comparison(
+            out, targets=["t"], models=["m", "bad"], judge_model="judge",
+            make_client=lambda _s, m: _client(lambda r: _reply('{"flags": []}'), m), log=print,
+        )  # fmt: skip
+    assert exc.value.failed == ["t bad"] and [s.model for s in exc.value.scores] == ["m"]
+    assert "**Failed, not scored:** t bad" in (out / "report.md").read_text()
+    assert json.loads((out / "results.json").read_text())["failed"] == ["t bad"]

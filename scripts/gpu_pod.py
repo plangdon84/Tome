@@ -24,6 +24,7 @@ Usage:
   uv run scripts/gpu_pod.py up                       # launch, wait for SSH
   uv run scripts/gpu_pod.py setup                    # copy code, install uv, tome and vLLM
   uv run scripts/gpu_pod.py vllm --model Qwen/Qwen2.5-14B-Instruct
+  uv run scripts/gpu_pod.py vllm --model qwen3-14b      # a preset: see MODEL_PRESETS
   uv run scripts/gpu_pod.py push library/harry-potter.epub library/series/harry-potter.toml
   uv run scripts/gpu_pod.py exec -- uv run tome pack build-text library/harry-potter.epub ...
   uv run scripts/gpu_pod.py pull data/harry-potter.tome
@@ -62,6 +63,47 @@ AMI_NAME = "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 22.04) *"
 SSH_USER = "ubuntu"
 ROOT_VOLUME_GB = 200  # ~40 GB for a 70B 4-bit model, plus vLLM and the HF cache
 VLLM_VERSION = "0.11.0"
+# Model presets for the Stage B candidates (docs/results/model-comparison-round-2.md):
+# name -> (Hugging Face id, extra `vllm serve` args, oldest vLLM that serves it).
+# Small models are sized for a 24 GB GPU, large ones for the 48 GB L40S. Thinking
+# mode is switched off per request by tome (tome/llm/models.py), not here.
+# Multimodal checkpoints get no image slots, which frees their encoder's memory.
+NO_IMAGES = ["--limit-mm-per-prompt", '{"image": 0}']
+MODEL_PRESETS: dict[str, tuple[str, list[str], str]] = {
+    "qwen2.5-7b": ("Qwen/Qwen2.5-7B-Instruct", [], "0.11.0"),
+    # Official FP8 weights: ~16 GB, where bf16 (~30 GB) would not fit 24 GB.
+    "qwen3-14b": ("Qwen/Qwen3-14B-FP8", [], "0.11.0"),
+    # Hybrid attention, new in vLLM 0.17. bf16 is ~19 GB.
+    "qwen3.5-9b": ("Qwen/Qwen3.5-9B", NO_IMAGES, "0.17.0"),
+    # Gated: accept the licence on Hugging Face and set HF_TOKEN. bf16 is ~24 GB,
+    # so quantize to FP8 on load (needs an Ada or newer GPU, such as the L40S or L4).
+    "gemma-3-12b": ("google/gemma-3-12b-it", ["--quantization", "fp8", *NO_IMAGES], "0.11.0"),
+    # Released in FP8 (~14 GB), in Mistral's own format.
+    "ministral-14b": (
+        "mistralai/Ministral-3-14B-Instruct-2512",
+        [
+            "--tokenizer-mode",
+            "mistral",
+            "--config-format",
+            "mistral",
+            "--load-format",
+            "mistral",
+            *NO_IMAGES,
+        ],
+        "0.12.0",
+    ),
+    # Released in MXFP4 (~13 GB).
+    "gpt-oss-20b": ("openai/gpt-oss-20b", [], "0.11.0"),
+    # AWQ 4-bit, ~40 GB: an FP8 KV cache halves the cache so 16k tokens still fit.
+    "qwen2.5-72b": ("Qwen/Qwen2.5-72B-Instruct-AWQ", ["--kv-cache-dtype", "fp8"], "0.11.0"),
+    "llama-3.3-70b": (
+        "casperhansen/llama-3.3-70b-instruct-awq",
+        ["--kv-cache-dtype", "fp8"],
+        "0.11.0",
+    ),
+    # AWQ 4-bit, ~19 GB: plenty of room for the cache.
+    "qwen3-32b": ("Qwen/Qwen3-32B-AWQ", [], "0.11.0"),
+}
 VLLM_PORT = 8000  # matches the vllm-local provider preset
 REMOTE_DIR = "tome"  # under the ubuntu user's home
 
@@ -396,12 +438,36 @@ def cmd_up(args: argparse.Namespace) -> None:
     sys.exit("SSH did not come up within 5 minutes (instance left running; run `down`)")
 
 
+def _version(v: str) -> tuple[int, ...]:
+    return tuple(int(x) for x in v.split(".")[:3] if x.isdigit())
+
+
+def resolve_model(model: str, vllm_args: list[str]) -> tuple[str, list[str], str | None]:
+    """(Hugging Face id, `vllm serve` args, oldest vLLM needed) for a preset name or an id."""
+    if model in MODEL_PRESETS:
+        hf_id, preset_args, min_vllm = MODEL_PRESETS[model]
+        return hf_id, [*preset_args, *vllm_args], min_vllm
+    return model, list(vllm_args), None
+
+
+def vllm_install(version: str) -> str:
+    """Shell that installs vLLM ``version`` into ~/vllm, unless it is already there."""
+    # vLLM 0.11 calls a tokenizer attribute that transformers 5 removed; later
+    # versions pin a transformers they work with.
+    pin = " 'transformers<5'" if _version(version) < (0, 12) else ""
+    have = f"~/vllm/bin/python -c \"import vllm, sys; sys.exit(vllm.__version__ != '{version}')\""
+    return (
+        f"({have} 2>/dev/null || (rm -rf ~/vllm && uv venv --python 3.12 ~/vllm && "
+        f"VIRTUAL_ENV=~/vllm uv pip install vllm=={version}{pin}))"
+    )
+
+
 def cmd_setup(args: argparse.Namespace) -> None:
     inst = require_instance(args)
     log("copying code (no library/, data/ or corpus/)")
     excludes = [f"--exclude={e}" for e in RSYNC_EXCLUDES]
     rsync(args, inst, ".", upload=True, extra=excludes)
-    log("installing uv, tome and vLLM")
+    log(f"installing uv, tome and vLLM {args.vllm_version}")
     remote(
         args,
         inst,
@@ -409,9 +475,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
             "command -v uv >/dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh; "
             "export PATH=$HOME/.local/bin:$PATH; "
             "uv sync --frozen --python 3.12 && "
-            f"(test -x ~/vllm/bin/vllm || (uv venv --python 3.12 ~/vllm && "
-            # vLLM 0.11 calls a tokenizer attribute that transformers 5 removed.
-            f"VIRTUAL_ENV=~/vllm uv pip install vllm=={VLLM_VERSION} 'transformers<5')) && "
+            f"{vllm_install(args.vllm_version)} && "
             "nvidia-smi --query-gpu=name,memory.total --format=csv"
         ),
     )
@@ -419,8 +483,13 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
 def cmd_vllm(args: argparse.Namespace) -> None:
     inst = require_instance(args)
-    extra = " ".join(shlex.quote(a) for a in args.vllm_args)
-    log(f"starting vLLM: {args.model}")
+    model, vllm_args, min_vllm = resolve_model(args.model, args.vllm_args)
+    version = getattr(args, "vllm_version", None)
+    if min_vllm and version and _version(version) < _version(min_vllm):
+        sys.exit(f"{args.model} needs vLLM >= {min_vllm}; run setup with --vllm-version")
+    args.model = model
+    extra = " ".join(shlex.quote(a) for a in vllm_args)
+    log(f"starting vLLM: {args.model} {extra}".rstrip())
     remote(
         args,
         inst,
@@ -561,7 +630,11 @@ def main() -> None:
         )
 
     def add_vllm_opts(sp: argparse.ArgumentParser) -> None:
-        sp.add_argument("--model", required=True, help="Hugging Face model id")
+        sp.add_argument(
+            "--model",
+            required=True,
+            help=f"Hugging Face model id, or a preset: {', '.join(MODEL_PRESETS)}",
+        )
         sp.add_argument("--max-model-len", type=int, default=16384)
         sp.add_argument("--wait-minutes", type=int, default=30)
         sp.add_argument(
@@ -573,8 +646,19 @@ def main() -> None:
         )
 
     add_up_opts(sub.add_parser("up", help="launch the instance and wait for SSH"))
-    sub.add_parser("setup", help="copy the code; install uv, tome and vLLM")
-    add_vllm_opts(sub.add_parser("vllm", help="(re)start vLLM on the pod and wait until ready"))
+
+    def add_setup_opts(sp: argparse.ArgumentParser) -> None:
+        sp.add_argument(
+            "--vllm-version",
+            default=VLLM_VERSION,
+            help=f"vLLM to install (default {VLLM_VERSION}); Qwen3.5 needs 0.17+, "
+            "Ministral 3 needs 0.12+",
+        )
+
+    add_setup_opts(sub.add_parser("setup", help="copy the code; install uv, tome and vLLM"))
+    sp = sub.add_parser("vllm", help="(re)start vLLM on the pod and wait until ready")
+    add_vllm_opts(sp)
+    sp.add_argument("--vllm-version", help="the vLLM on the pod, to check a preset against")
     sp = sub.add_parser("push", help="copy local files (repo-relative) to the pod")
     sp.add_argument("paths", nargs="+")
     sp = sub.add_parser("pull", help="copy pod files (repo-relative) back here")
@@ -587,6 +671,7 @@ def main() -> None:
     sub.add_parser("down", help="terminate the instance; delete its security group and key pair")
     sp = sub.add_parser("run", help="up, setup, vllm, push, exec, pull, down")
     add_up_opts(sp)
+    add_setup_opts(sp)
     add_vllm_opts(sp)
     sp.add_argument("--push", action="append", default=[], help="file to upload (repeatable)")
     sp.add_argument("--pull", action="append", default=[], help="file to download (repeatable)")

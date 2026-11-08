@@ -241,6 +241,24 @@ def test_usage_and_cost_reach_the_run_record(tmp_path):
     assert json.loads(run["stats_json"])["llm_calls"] == 5
 
 
+def test_hosts_and_reasoning_tokens_reach_the_run_record(tmp_path):
+    def handler(request):
+        text = '{"verdicts": []}' if _is_check(request) else "<think>Dorothy?</think>A summary."
+        body = json.loads(_reply(text).content)
+        body["provider"] = "DeepInfra"
+        body["usage"]["completion_tokens_details"] = {"reasoning_tokens": 2}
+        return httpx.Response(200, json=body)
+
+    w = _writer(tmp_path, books=1, chapters=1)
+    stats = summarize_pack(w, _mock_client(handler, check=handler))
+    summary = w.conn.execute("SELECT summary_text FROM chapter_summaries").fetchone()[0]
+    run = json.loads(w.conn.execute("SELECT stats_json FROM runs").fetchone()[0])
+    w.close()
+    assert summary == "A summary."
+    assert stats.hosts == {"DeepInfra": 5} and run["hosts"] == {"DeepInfra": 5}
+    assert run["reasoning_tokens"] == 10
+
+
 def _cut_off_when(condition):
     """A fake server that cuts off any reply whose prompt meets ``condition``."""
 
