@@ -161,7 +161,14 @@ this?" questions.
   Coverage was a wash. Follow-ups: the search fallback no longer leaks the
   Sinbad case, and rollups are checked sentence by sentence against their
   chapter summaries, as a warning only, since 7B's rewrites added as many errors as
-  they fixed. Stage B is next.*
+  they fixed. Round 2 done 2026-11-08
+  ([results](results/model-comparison-round-2.md)): nine candidates, two runs
+  each, every model pinned to one OpenRouter host. No leaks. In contradicted
+  chapter-summary sentences (Oz + MC, run 1 / run 2), Llama 3.3 70B led with
+  0 / 4, then Qwen 2.5 72B 8 / 5 and Qwen3 14B 8 / 10. Qwen 2.5 7B had
+  27 / 29 and gpt-oss 20B 36 / 31. Stage B candidates: Qwen3 14B (FP8, thinking
+  off) and Llama 3.3 70B (AWQ). Pinning did not make runs repeatable.
+  Stage B is next.*
 
 **Gate:** recaps are accurate and spoiler-free. Search returns the right
 passages for "where have I seen X?"
