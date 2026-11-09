@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -39,6 +40,41 @@ LARGE_MODEL = "qwen/qwen-2.5-72b-instruct"  # the ~70B tier, same family
 JUDGE_MODEL = "deepseek/deepseek-v3.2"
 JUDGE_PROMPT_VERSION = "support-v1"
 JUDGE_MAX_TOKENS = 2000
+JUDGE_ATTEMPTS = 3
+JUDGE_RETRY_S = 10.0
+
+# Round 2 candidates (docs/results/model-comparison-round-2.md). Small: fits a
+# 24 GB GPU under vLLM. Large: fits one 48 GB L40S, 4-bit allowed.
+SMALL_CANDIDATES = (
+    SMALL_MODEL,
+    "qwen/qwen3-14b",
+    "qwen/qwen3.5-9b",
+    "google/gemma-3-12b-it",
+    "mistralai/ministral-14b-2512",
+    "openai/gpt-oss-20b",
+)
+LARGE_CANDIDATES = (LARGE_MODEL, "meta-llama/llama-3.3-70b-instruct", "qwen/qwen3-32b")
+
+# The OpenRouter host each model is pinned to, so two runs see the same weights,
+# quantization and serving stack. OpenRouter otherwise picks a host per request,
+# which made round 1 noisy even at temperature 0. Slugs are from
+# /api/v1/models/<id>/endpoints (checked 2026-11-08): the least-quantized host
+# that supports response_format, preferring one host across models.
+HOSTS = {
+    SMALL_MODEL: "phala",  # the only host
+    "qwen/qwen3-14b": "deepinfra/fp8",
+    # DeepInfra's shared pool returned 429s for these two on 2026-11-08.
+    "qwen/qwen3.5-9b": "parasail/bf16",
+    "google/gemma-3-12b-it": "deepinfra/bf16",
+    "mistralai/ministral-14b-2512": "mistral",  # the only host
+    # MXFP4, as released and as vLLM serves it. SiliconFlow's host put "analysis"
+    # (a reasoning channel name) in a structured reply.
+    "openai/gpt-oss-20b": "coreweave/fp4",
+    LARGE_MODEL: "deepinfra/fp8",  # the only host
+    "meta-llama/llama-3.3-70b-instruct": "deepinfra/turbo",
+    "qwen/qwen3-32b": "deepinfra/fp8",
+    JUDGE_MODEL: "atlas-cloud/fp8",
+}
 
 
 @dataclass(frozen=True)
@@ -205,19 +241,23 @@ class Judgment:
     error: str | None = None
 
 
-def judge(client: ChatClient, item: Item) -> Judgment:
+def judge(client: ChatClient, item: Item, sleep: Callable[[float], None] = time.sleep) -> Judgment:
     messages = [
         {"role": "system", "content": JUDGE_SYSTEM},
         {"role": "user", "content": f"INPUTS:\n{item.inputs}\n\nSUMMARY:\n{item.text}"},
     ]
     n = len(sentences(item.text))
-    try:
-        out = client.structured(
-            messages, JUDGE_SCHEMA, name="support_check", purpose="support_check",
-            max_tokens=JUDGE_MAX_TOKENS,
-        )  # fmt: skip
-    except LLMError as exc:
-        return Judgment(item.key, item.kind, item.book, item.chapter, n, [], error=str(exc))
+    for attempt in range(1, JUDGE_ATTEMPTS + 1):
+        try:
+            out = client.structured(
+                messages, JUDGE_SCHEMA, name="support_check", purpose="support_check",
+                max_tokens=JUDGE_MAX_TOKENS,
+            )  # fmt: skip
+            break
+        except LLMError as exc:  # rate limits and overloaded hosts, mostly
+            if attempt == JUDGE_ATTEMPTS:
+                return Judgment(item.key, item.kind, item.book, item.chapter, n, [], error=str(exc))
+            sleep(JUDGE_RETRY_S * attempt)
     flags, seen = [], set()
     for flag in out["flags"]:
         sentence = flag["sentence"].strip()
@@ -271,7 +311,11 @@ class Score:
     llm_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning_tokens: int = 0
     cost_usd: float | None = None
+    hosts: dict[str, int] = field(default_factory=dict)  # summary calls per serving host
+    judge_hosts: dict[str, int] = field(default_factory=dict)
+    judge_cost_usd: float | None = None
     truncated: int = 0
     rollups_skipped: int = 0
     name_retries: int = 0
@@ -308,8 +352,8 @@ def score_pack(target: Target, model: str, pack: Path, judgments: Sequence[Judgm
     stats = json.loads(run["stats_json"] or "{}")
     s = Score(target.name, model, str(pack))
     for name in (
-        "chapters", "llm_calls", "prompt_tokens", "completion_tokens", "cost_usd",
-        "truncated", "rollups_skipped", "name_retries", "unseen_names",
+        "chapters", "llm_calls", "prompt_tokens", "completion_tokens", "reasoning_tokens",
+        "cost_usd", "hosts", "truncated", "rollups_skipped", "name_retries", "unseen_names",
         "rollup_checks", "rollup_check_errors", "unsupported",
     ):  # fmt: skip
         setattr(s, name, stats.get(name, getattr(s, name)))
@@ -372,6 +416,7 @@ def run_comparison(
     judge_model: str,
     make_client: Callable[[Series, str], ChatClient],
     max_chapters: int | None = None,
+    parallel: int | None = None,
     log: Callable[[str], None] = print,
 ) -> list[Score]:
     """Build (or reuse) every pack, judge it, score it, and write the report."""
@@ -401,23 +446,48 @@ def run_comparison(
             cache = out_dir / "judgments" / f"{target.name}--{slug(model)}.json"
             judgments = judge_pack(judge_client, pack, cache)
             judge_cost = judge_client.usage.cost_usd
+            judge_hosts: dict[str, int] = {}
+            for r in judge_client.usage.records:
+                if r.host:
+                    judge_hosts[r.host] = judge_hosts.get(r.host, 0) + 1
         finally:
             judge_client.close()
         say(f"{target.name} {model}: judged {len(judgments)} summaries (${judge_cost:.4f})")
-        return score_pack(target, model, pack, judgments)
+        score = score_pack(target, model, pack, judgments)
+        score.judge_hosts, score.judge_cost_usd = judge_hosts, judge_cost
+        return score
+
+    def attempt(target: Target, model: str) -> Score | None:
+        try:
+            return one(target, model)
+        except Exception as exc:  # one failed pack must not lose the others
+            say(f"{target.name} {model}: FAILED: {exc}")
+            return None
 
     jobs = [(TARGETS[t], m) for t in targets for m in models]
-    with ThreadPoolExecutor(len(jobs)) as pool:
-        scores = list(pool.map(lambda job: one(*job), jobs))
+    with ThreadPoolExecutor(min(len(jobs), parallel or len(jobs))) as pool:
+        results = list(pool.map(lambda job: attempt(*job), jobs))
+    scores = [s for s in results if s is not None]
+    failed = [f"{t.name} {m}" for (t, m), s in zip(jobs, results, strict=True) if s is None]
     (out_dir / "results.json").write_text(
         json.dumps(
-            {"judge": judge_model, "scores": [asdict(s) for s in scores]},
+            {"judge": judge_model, "scores": [asdict(s) for s in scores], "failed": failed},
             indent=1,
             ensure_ascii=False,
         )
     )
-    (out_dir / "report.md").write_text(format_report(scores, judge_model))
+    (out_dir / "report.md").write_text(format_report(scores, judge_model, failed))
+    if failed:
+        raise ComparisonFailed(failed, scores)
     return scores
+
+
+class ComparisonFailed(RuntimeError):
+    """Some packs failed. The report covers the rest; a rerun builds only what is missing."""
+
+    def __init__(self, failed: list[str], scores: list[Score]):
+        super().__init__(f"{len(failed)} pack(s) failed: {', '.join(failed)}")
+        self.failed, self.scores = failed, scores
 
 
 # ------------------------------------------------------------ the report --
@@ -427,7 +497,11 @@ def _pct(x: float | None) -> str:
     return "n/a" if x is None else f"{100 * x:.1f}%"
 
 
-def format_report(scores: Sequence[Score], judge_model: str) -> str:
+def _hosts(hosts: dict[str, int]) -> str:
+    return ", ".join(f"{h} ×{n}" for h, n in sorted(hosts.items())) or "n/a"
+
+
+def format_report(scores: Sequence[Score], judge_model: str, failed: Sequence[str] = ()) -> str:
     lines = [
         "# Model comparison, Stage A (public domain, automated)",
         "",
@@ -435,6 +509,8 @@ def format_report(scores: Sequence[Score], judge_model: str) -> str:
         "Support = share of summary sentences the judge did not flag.",
         "",
     ]
+    if failed:
+        lines += [f"**Failed, not scored:** {', '.join(failed)}", ""]
     for target in dict.fromkeys(s.target for s in scores):
         rows = [s for s in scores if s.target == target]
         lines += [
@@ -464,7 +540,10 @@ def format_report(scores: Sequence[Score], judge_model: str) -> str:
         )
         row("Cut-off replies / skipped rollups", lambda s: f"{s.truncated} / {s.rollups_skipped}")
         row("Tokens in + out", lambda s: f"{s.prompt_tokens:,} + {s.completion_tokens:,}")
+        row("Reasoning tokens (in out)", lambda s: f"{s.reasoning_tokens:,}")
         row("Cost (summaries)", lambda s: "n/a" if s.cost_usd is None else f"${s.cost_usd:.4f}")
+        row("Hosts (summaries)", lambda s: _hosts(s.hosts))
+        row("Hosts (judge)", lambda s: _hosts(s.judge_hosts))
         lines.append("")
         for s in rows:
             lines.append(f"### `{s.model}` on {target}")

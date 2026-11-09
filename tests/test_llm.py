@@ -3,7 +3,16 @@ import json
 import httpx
 import pytest
 
-from tome.llm.client import ChatClient, StructuredOutputError, extract_json
+from tome.llm.client import ChatClient, LLMError, StructuredOutputError, extract_json, pin_host
+from tome.llm.models import (
+    GPT_OSS,
+    PLAIN,
+    QWEN3,
+    QWEN3_5,
+    REASONING_HEADROOM,
+    strip_reasoning,
+    traits_for,
+)
 from tome.llm.policy import ProviderNotAllowed, check_provider
 from tome.llm.providers import PLACEHOLDER_KEY, PRESETS, Provider, get_provider
 from tome.llm.usage import UsageLog
@@ -224,6 +233,144 @@ def test_extract_json_variants():
 def test_provider_base_url_override(monkeypatch):
     monkeypatch.setenv("TOME_VLLM_LOCAL_BASE_URL", "http://127.0.0.1:9000/v1")
     assert get_provider("vllm-local").base_url == "http://127.0.0.1:9000/v1"
+
+
+# ------------------------------------------------- host pinning, reasoning --
+
+
+def _capture(seen: list, reply: dict | None = None):
+    def handler(request):
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, json=reply or completion("ok"))
+
+    return handler
+
+
+def test_no_host_is_pinned_by_default():
+    seen = []
+    client, _ = mock_client(_capture(seen))
+    client.chat([{"role": "user", "content": "hi"}], purpose="t")
+    assert "provider" not in seen[0]
+
+
+def test_pinned_host_is_sent_and_the_serving_host_recorded():
+    seen = []
+    reply = {**completion("ok"), "provider": "DeepInfra"}
+    usage = UsageLog(path=None)
+    http = httpx.Client(transport=httpx.MockTransport(_capture(seen, reply)))
+    client = ChatClient(
+        PRESETS["openrouter"],
+        PD,
+        model="m",
+        usage=usage,
+        http=http,
+        route=pin_host("deepinfra/fp8"),
+    )
+    out = client.chat([{"role": "user", "content": "hi"}], purpose="t")
+    assert seen[0]["provider"] == {
+        "order": ["deepinfra/fp8"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+    assert out.host == "DeepInfra" and usage.records[-1].host == "DeepInfra"
+
+
+def test_route_is_not_sent_to_other_servers():
+    seen = []
+    http = httpx.Client(transport=httpx.MockTransport(_capture(seen)))
+    client = ChatClient(
+        PRESETS["vllm-local"], PD, model="m", usage=UsageLog(path=None), http=http,
+        route=pin_host("deepinfra"),
+    )  # fmt: skip
+    client.chat([{"role": "user", "content": "hi"}], purpose="t")
+    assert "provider" not in seen[0]
+
+
+def test_openrouter_error_in_a_200_reply_is_an_error():
+    body = {"error": {"message": "Provider returned error", "code": 429}}
+    client, usage = mock_client(lambda r: httpx.Response(200, json=body))
+    with pytest.raises(LLMError, match="429"):
+        client.chat([{"role": "user", "content": "hi"}], purpose="t")
+    assert usage.records[-1].ok is False
+
+
+@pytest.mark.parametrize(
+    "model,traits",
+    [
+        ("qwen/qwen3-14b", QWEN3),
+        ("Qwen/Qwen3-32B-AWQ", QWEN3),
+        ("qwen/qwen3.5-9b", QWEN3_5),
+        ("Qwen/Qwen3.5-9B", QWEN3_5),
+        ("openai/gpt-oss-20b", GPT_OSS),
+        ("qwen/qwen3-30b-a3b-instruct-2507", PLAIN),
+        ("qwen/qwen-2.5-7b-instruct", PLAIN),
+        ("google/gemma-3-12b-it", PLAIN),
+    ],
+)
+def test_model_traits_match_openrouter_and_hugging_face_ids(model, traits):
+    assert traits_for(model) == traits
+
+
+MESSAGES = [{"role": "system", "content": "Rules."}, {"role": "user", "content": "Summarize."}]
+
+
+@pytest.mark.parametrize("provider", ["openrouter", "vllm-local"])
+def test_qwen3_thinking_is_switched_off_in_the_system_prompt(provider):
+    seen = []
+    client, _ = mock_client(_capture(seen), provider=provider, model="qwen/qwen3-14b")
+    client.chat(MESSAGES, purpose="t", max_tokens=700)
+    assert seen[0]["messages"][0]["content"] == "Rules.\n\n/no_think"
+    assert seen[0]["messages"][1]["content"] == "Summarize."
+    assert seen[0]["max_tokens"] == 700
+    assert MESSAGES[0]["content"] == "Rules."  # the caller's list is untouched
+
+
+def test_qwen3_5_thinking_is_switched_off_per_server():
+    seen = []
+    client, _ = mock_client(_capture(seen), model="qwen/qwen3.5-9b")
+    client.chat(MESSAGES, purpose="t")
+    assert seen[0]["reasoning"] == {"enabled": False}
+    assert seen[0]["messages"][0]["content"] == "Rules."
+    client, _ = mock_client(_capture(seen), provider="vllm-local", model="Qwen/Qwen3.5-9B")
+    client.chat(MESSAGES, purpose="t")
+    assert seen[1]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "reasoning" not in seen[1]
+
+
+def test_gpt_oss_reasons_low_with_headroom_and_counts_reasoning_tokens():
+    seen = []
+    usage = {
+        "prompt_tokens": 100,
+        "completion_tokens": 250,
+        "completion_tokens_details": {"reasoning_tokens": 90},
+    }
+    reply = completion("A summary.", usage=usage)
+    reply["choices"][0]["message"]["reasoning"] = "Let me think about the chapter."
+    client, log = mock_client(_capture(seen, reply), model="openai/gpt-oss-20b")
+    out = client.chat(MESSAGES, purpose="t", max_tokens=700)
+    assert seen[0]["reasoning"]["effort"] == "low"
+    assert seen[0]["max_tokens"] == 700 + REASONING_HEADROOM
+    assert out.text == "A summary." and out.reasoning_tokens == 90
+    assert log.records[-1].reasoning_tokens == 90
+    client, _ = mock_client(_capture(seen), provider="vllm-local", model="openai/gpt-oss-20b")
+    client.chat(MESSAGES, purpose="t")
+    assert seen[1]["reasoning_effort"] == "low"
+
+
+def test_other_models_get_no_extra_fields():
+    seen = []
+    client, _ = mock_client(_capture(seen), model="google/gemma-3-12b-it")
+    client.chat(MESSAGES, purpose="t", max_tokens=700)
+    assert seen[0]["max_tokens"] == 700 and "reasoning" not in seen[0]
+    assert seen[0]["messages"] == MESSAGES
+
+
+def test_think_block_never_reaches_the_reply():
+    reply = completion("<think>\nThe secret is X.\n</think>\n\nTip ran away.")
+    client, _ = mock_client(lambda r: httpx.Response(200, json=reply))
+    assert client.chat(MESSAGES, purpose="t").text == "Tip ran away."
+    assert strip_reasoning("<think></think>Fine.") == "Fine."
+    assert strip_reasoning("He said <think> twice.") == "He said <think> twice."
 
 
 # -------------------------------------------------------------- live smoke --

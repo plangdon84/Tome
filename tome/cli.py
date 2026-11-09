@@ -364,14 +364,29 @@ def compare(
     judge: str | None = typer.Option(None, help="Support-check judge model."),
     provider: str = typer.Option("openrouter", help="Provider for every model and the judge."),
     max_chapters: int | None = typer.Option(None, help="Stop each pack early, for a trial."),
+    pin: bool = typer.Option(
+        True, help="Pin each model to one OpenRouter host (tome.compare.HOSTS), no fallbacks."
+    ),
+    host: list[str] = typer.Option(
+        None, help="MODEL=HOST to pin a model to another host (repeatable)."
+    ),
+    parallel: int | None = typer.Option(None, help="Packs built at once (default: all)."),
 ):
     """Model comparison, Stage A: summary packs per model, scored by evals and a judge.
 
     Packs and judgments already in --out are reused, so a rerun only pays for what
     is missing. Writes results.json and report.md there.
     """
-    from tome.compare import JUDGE_MODEL, LARGE_MODEL, SMALL_MODEL, TARGETS, run_comparison
-    from tome.llm.client import ChatClient
+    from tome.compare import (
+        HOSTS,
+        JUDGE_MODEL,
+        LARGE_MODEL,
+        SMALL_MODEL,
+        TARGETS,
+        ComparisonFailed,
+        run_comparison,
+    )
+    from tome.llm.client import ChatClient, pin_host
     from tome.llm.providers import get_provider
 
     for t in target:
@@ -380,16 +395,34 @@ def compare(
         missing = [e for e in TARGETS[t].epubs if not Path(e).exists()]
         if missing:
             raise typer.BadParameter(f"missing {missing}; run `tome corpus fetch`")
+    hosts = dict(HOSTS) if pin else {}
+    for h in host or []:
+        name, sep, slug = h.partition("=")
+        if not (sep and name and slug):
+            raise typer.BadParameter(f"--host takes MODEL=HOST, not {h!r}")
+        hosts[name] = slug
     preset = get_provider(provider)
-    scores = run_comparison(
-        out,
-        targets=target,
-        models=model or [SMALL_MODEL, LARGE_MODEL],
-        judge_model=judge or JUDGE_MODEL,
-        make_client=lambda series, m: ChatClient(preset, series, model=m, timeout=600.0),
-        max_chapters=max_chapters,
-        log=lambda msg: typer.echo(msg, err=True),
-    )
+
+    def make_client(series, m):
+        route = pin_host(hosts[m]) if m in hosts else None
+        if pin and route is None:
+            typer.echo(f"note: no pinned host for {m}; OpenRouter will choose", err=True)
+        return ChatClient(preset, series, model=m, timeout=600.0, route=route)
+
+    failed = None
+    try:
+        scores = run_comparison(
+            out,
+            targets=target,
+            models=model or [SMALL_MODEL, LARGE_MODEL],
+            judge_model=judge or JUDGE_MODEL,
+            make_client=make_client,
+            max_chapters=max_chapters,
+            parallel=parallel,
+            log=lambda msg: typer.echo(msg, err=True),
+        )
+    except ComparisonFailed as exc:
+        scores, failed = exc.scores, exc
     for s in scores:
         typer.echo(
             f"{s.target} {s.model}: leaks {s.leaks}/{s.spoiler_cases}, "
@@ -397,6 +430,9 @@ def compare(
             f"{'n/a' if s.support_rate() is None else f'{100 * s.support_rate():.1f}%'}"
         )
     typer.echo(f"report: {out / 'report.md'}")
+    if failed:
+        typer.echo(f"{failed}; rerun to build only what is missing", err=True)
+        raise typer.Exit(1)
 
 
 # --------------------------------------------------------------------- llm --

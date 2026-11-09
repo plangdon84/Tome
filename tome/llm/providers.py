@@ -7,6 +7,8 @@ from dataclasses import dataclass, field, replace
 from typing import Literal
 
 Hosting = Literal["self_hosted", "third_party"]
+# Which extra request fields a server understands (see tome.llm.models).
+Dialect = Literal["openrouter", "vllm", "openai"]
 
 # Placeholder used when no key is configured. In Claude Code cloud sessions the
 # network proxy injects the real Authorization header for openrouter.ai; local
@@ -23,6 +25,7 @@ class Provider:
     default_model: str | None = None
     extra_body: dict = field(default_factory=dict)
     supports_json_schema: bool = True
+    dialect: Dialect = "openai"
 
     def api_key(self) -> str:
         if self.api_key_env and os.environ.get(self.api_key_env):
@@ -44,9 +47,14 @@ PRESETS: dict[str, Provider] = {
             default_model="meta-llama/llama-3.1-8b-instruct",
             # Ask OpenRouter to include cost in the usage block.
             extra_body={"usage": {"include": True}},
+            dialect="openrouter",
         ),
         Provider(
-            "vllm-local", "http://localhost:8000/v1", "self_hosted", api_key_env="VLLM_API_KEY"
+            "vllm-local",
+            "http://localhost:8000/v1",
+            "self_hosted",
+            api_key_env="VLLM_API_KEY",
+            dialect="vllm",
         ),
         Provider("llamacpp-local", "http://localhost:8080/v1", "self_hosted"),
         Provider("ollama-local", "http://localhost:11434/v1", "self_hosted"),

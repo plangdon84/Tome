@@ -303,3 +303,20 @@ volume.
 
 **Decision rule:** keep the smaller model unless it has any spoiler, or at
 least 2 more factual errors than the larger one, in Stage B.
+
+**Model choice (decided 2026-11-09, after Stage A round 2).** This replaces the
+decision rule above.
+- **Lead with Llama 3.3 70B**, AWQ 4-bit, on `g6e.xlarge`
+  (`gpu_pod.py --model llama-3.3-70b`). In round 2 it had the fewest
+  contradicted sentences of nine candidates in both runs
+  ([results](results/model-comparison-round-2.md)).
+- **Fall back to Qwen3 14B** (official FP8, thinking off,
+  `--model qwen3-14b`) only when no `g6e.xlarge` capacity can be found. It
+  fits the 24 GB instances that do launch: `g6.xlarge` (L4) and `g5.xlarge`
+  (A10G). The A10G is an Ampere GPU, so vLLM runs FP8 there as weight-only
+  (Marlin). That is untested.
+- **Stage B still runs, but it checks the lead model rather than choosing
+  between the two.** It judges Llama 3.3 70B at 4-bit, which OpenRouter's
+  8-bit hosts never tested, and Qwen3 14B as the fallback. A pack built with
+  the fallback records its model in `runs`, so it can be rebuilt with Llama
+  later.

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 import httpx
 import jsonschema
 
+from tome.llm.models import strip_reasoning, traits_for
 from tome.llm.policy import check_provider
 from tome.llm.providers import Provider
 from tome.llm.usage import UsageLog, UsageRecord, now
@@ -37,6 +38,19 @@ class ChatResult:
     completion_tokens: int
     cost_usd: float | None
     raw: dict
+    host: str | None = None  # the host that served it, when the provider says (OpenRouter)
+    reasoning_tokens: int = 0  # part of completion_tokens
+
+
+def pin_host(host: str) -> dict:
+    """An OpenRouter ``provider`` field that sends every request to one host, or fails.
+
+    ``host`` is a provider or endpoint slug from ``/api/v1/models/<id>/endpoints``
+    (``deepinfra``, ``deepinfra/fp8``). ``require_parameters`` makes OpenRouter
+    refuse rather than drop a field the host doesn't support, such as
+    ``response_format`` or ``reasoning``.
+    """
+    return {"order": [host], "allow_fallbacks": False, "require_parameters": True}
 
 
 class ChatClient:
@@ -49,7 +63,12 @@ class ChatClient:
         usage: UsageLog | None = None,
         http: httpx.Client | None = None,
         timeout: float = 120.0,
+        route: dict | None = None,
     ):
+        """``route`` is OpenRouter's ``provider`` request field (see ``pin_host``).
+
+        Off by default, so OpenRouter picks the host; ignored by other servers.
+        """
         check_provider(series, provider)
         self.provider = provider
         self.series = series
@@ -57,6 +76,7 @@ class ChatClient:
         if not self.model:
             raise LLMError(f"no model given and provider {provider.name!r} has no default")
         self.usage = usage if usage is not None else UsageLog()
+        self.route = route
         self._http = http or httpx.Client(timeout=timeout)
 
     def close(self) -> None:
@@ -75,13 +95,26 @@ class ChatClient:
     ) -> ChatResult:
         check_provider(self.series, self.provider)  # re-check on every call
         model = model or self.model
+        traits = traits_for(model)
+        if traits.system_suffix:
+            messages = [
+                {**m, "content": m["content"] + traits.system_suffix}
+                if m["role"] == "system"
+                else m
+                for m in messages
+            ]
         body = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            # Reasoning tokens count against max_tokens; the headroom keeps the
+            # reply's own budget what the caller asked for.
+            "max_tokens": max_tokens + traits.reasoning_headroom,
             **self.provider.extra_body,
+            **traits.extra_body(self.provider.dialect),
         }
+        if self.route is not None and self.provider.dialect == "openrouter":
+            body["provider"] = self.route
         if response_format is not None:
             body["response_format"] = response_format
         headers = {"Authorization": f"Bearer {self.provider.api_key()}", "X-Title": "tome"}
@@ -93,12 +126,17 @@ class ChatClient:
             if resp.status_code >= 400:
                 raise LLMError(f"{self.provider.name} HTTP {resp.status_code}: {resp.text[:500]}")
             data = resp.json()
-            text = data["choices"][0]["message"].get("content") or ""
+            if "choices" not in data and "error" in data:  # OpenRouter: HTTP 200, error body
+                raise LLMError(f"{self.provider.name} error: {str(data['error'])[:500]}")
+            # Reasoning comes back in its own field (reasoning, reasoning_content),
+            # never in content; a <think> block left in content is dropped too.
+            text = strip_reasoning(data["choices"][0]["message"].get("content") or "")
         except (httpx.HTTPError, LLMError, KeyError, IndexError, ValueError) as exc:
             self._log(model, purpose, {}, time.monotonic() - started, error=str(exc))
             raise exc if isinstance(exc, LLMError) else LLMError(str(exc)) from exc
         usage = data.get("usage") or {}
-        self._log(data.get("model", model), purpose, usage, time.monotonic() - started)
+        host = data.get("provider") if isinstance(data.get("provider"), str) else None
+        self._log(data.get("model", model), purpose, usage, time.monotonic() - started, host=host)
         return ChatResult(
             text,
             data.get("model", model),
@@ -106,9 +144,13 @@ class ChatClient:
             usage.get("completion_tokens", 0),
             usage.get("cost"),
             data,
+            host,
+            _reasoning_tokens(usage),
         )
 
-    def _log(self, model, purpose, usage: dict, latency: float, error: str | None = None):
+    def _log(
+        self, model, purpose, usage: dict, latency: float, error: str | None = None, host=None
+    ):
         pt, ct = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         self.usage.add(
             UsageRecord(
@@ -124,6 +166,8 @@ class ChatClient:
                 latency_s=round(latency, 3),
                 ok=error is None,
                 error=error,
+                host=host,
+                reasoning_tokens=_reasoning_tokens(usage),
             )
         )
 
@@ -173,6 +217,10 @@ class ChatClient:
                     },
                 ]
         raise StructuredOutputError(f"no valid {name} after {retries + 1} attempts: {last_error}")
+
+
+def _reasoning_tokens(usage: dict) -> int:
+    return (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
 
 
 def schema_instruction(schema: dict) -> str:

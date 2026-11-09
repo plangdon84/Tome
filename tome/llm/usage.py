@@ -27,6 +27,8 @@ class UsageRecord:
     latency_s: float
     ok: bool
     error: str | None = None
+    host: str | None = None  # the host that served it, when the provider says (OpenRouter)
+    reasoning_tokens: int = 0  # part of completion_tokens
 
 
 @dataclass
@@ -39,9 +41,10 @@ class UsageLog:
     def add(self, record: UsageRecord) -> None:
         self.records.append(record)
         log.info(
-            "llm %s/%s series=%s purpose=%s tokens=%d+%d cost=%s %.2fs%s",
+            "llm %s/%s@%s series=%s purpose=%s tokens=%d+%d cost=%s %.2fs%s",
             record.provider,
             record.model,
+            record.host or "-",
             record.series,
             record.purpose,
             record.prompt_tokens,
