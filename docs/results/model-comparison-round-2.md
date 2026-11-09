@@ -10,6 +10,9 @@ the judge's reason, is in
 
 ## Recommendation for Stage B
 
+**Decided 2026-11-09** ([DECISIONS.md §12](../DECISIONS.md)): lead with
+Llama 3.3 70B. Use Qwen3 14B only when no `g6e.xlarge` capacity can be found.
+
 - **Small: `Qwen/Qwen3-14B-FP8` (Qwen3 14B, thinking off).** It had the fewest
   contradicted sentences of the small models in both runs (8 and 10, against
   28 to 34 for the current Qwen 2.5 7B). That is close to the large models.
@@ -252,3 +255,62 @@ vLLM. On the pod, tome's `--model` is the Hugging Face id (for example
     (≥ 0.17) or Ministral 3 (≥ 0.12). Above 0.11 the script drops the
     `transformers<5` pin.
   - The version bump is untested on the pod.
+
+## Follow-up: do two drafts agree on their errors? (2026-11-09)
+
+The question: could we write each chapter summary twice and keep only the
+sentences both drafts agree on? `scripts/agreement.py` tested this on the two
+runs we already have.
+- **Method:** for every chapter, a checker (`deepseek/deepseek-v3.2`, pinned
+  to AtlasCloud) read each sentence of one run's summary next to the other
+  run's summary of the same chapter. It answered *agree*, *conflict* (the
+  other draft says something incompatible) or *absent*, in both directions.
+  The answers were then crossed with the support judge's flags.
+- **Size:** 9 models, 2 targets, 16,500 sentences.
+- **Cost:** $0.34. 61 sentences got no verdict and are left out.
+
+| Model | Judged contradicted | Dropped (agree-only filter) | Dropped (conflict-only filter) | Unflagged sentences | Dropped (agree-only filter) | Dropped (conflict-only filter) |
+|---|---|---|---|---|---|---|
+| Qwen 2.5 7B | 54 | 41 (76%) | 34 (63%) | 842 | 265 (31%) | 163 (19%) |
+| Qwen3 14B | 17 | 8 (47%) | 6 (35%) | 1,071 | 208 (19%) | 119 (11%) |
+| Qwen3.5 9B | 50 | 28 (56%) | 24 (48%) | 1,410 | 312 (22%) | 164 (12%) |
+| Gemma 3 12B | 28 | 18 (64%) | 13 (46%) | 1,055 | 270 (26%) | 152 (14%) |
+| Ministral 14B | 26 | 17 (65%) | 13 (50%) | 1,145 | 213 (19%) | 112 (10%) |
+| gpt-oss 20B | 65 | 35 (54%) | 30 (46%) | 973 | 312 (32%) | 166 (17%) |
+| Qwen 2.5 72B | 13 | 4 (31%) | 3 (23%) | 1,238 | 179 (14%) | 101 (8%) |
+| Llama 3.3 70B | 4 | 2 (50%) | 1 (25%) | 1,017 | 143 (14%) | 82 (8%) |
+| Qwen3 32B | 17 | 8 (47%) | 5 (29%) | 1,068 | 191 (18%) | 105 (10%) |
+| **All** | **274** | **161 (59%)** | **129 (47%)** | **9,819** | **2,093 (21%)** | **1,164 (12%)** |
+
+The "agree-only" filter drops any sentence the other draft doesn't agree
+with. The "conflict-only" filter drops only sentences the other draft
+contradicts. Per-model counts (`data/compare/agreement.md`) are not
+committed.
+
+**What it shows:**
+
+1. **Agreement is a poor filter.**
+   - The agree-only filter removes about 3 in 5 judged errors.
+   - It also throws away 1 in 5 sentences the judge found nothing wrong
+     with, about 13 good sentences for every error.
+   - For Llama 3.3 70B, it drops 2 of its 4 judged errors and 143 good
+     sentences.
+   - Dropping only conflicts is gentler, but still costs about 9 good
+     sentences per error caught.
+2. **Two in five judged errors appear in both drafts.** The other draft
+   agreed with 113 of 274. Some of these are judge false positives; the
+   spot-check above found about 4 in 9 are. The rest are a model misreading
+   the same passage the same way twice. Only a check against the chapter
+   text can catch those, so agreement can't replace that check.
+3. **Some disagreement comes from the setup, not the model.** The two runs'
+   drafts of a chapter had different rolling context, because their earlier
+   summaries differed. Two drafts from the same context would probably
+   disagree less. They would still share the systematic errors in point 2.
+4. **Agreement is a cheap stability measure.** The stronger models' clean
+   sentences were dropped least: Llama and Qwen 2.5 72B lost 14%, against
+   31–32% for Qwen 2.5 7B and gpt-oss.
+
+**Verdict:** don't build a two-draft consensus step. Spend the effort on
+checking each chapter summary against its own text (PLAN.md Phase 1). At
+most, a conflict between drafts could be one low-weight signal in the
+review queue.

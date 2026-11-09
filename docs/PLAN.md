@@ -168,10 +168,67 @@ this?" questions.
   0 / 4, then Qwen 2.5 72B 8 / 5 and Qwen3 14B 8 / 10. Qwen 2.5 7B had
   27 / 29 and gpt-oss 20B 36 / 31. Stage B candidates: Qwen3 14B (FP8, thinking
   off) and Llama 3.3 70B (AWQ). Pinning did not make runs repeatable.
-  Stage B is next.*
+  **Decided 2026-11-09:** lead with Llama 3.3 70B, and fall back to Qwen3 14B
+  only without `g6e.xlarge` capacity (DECISIONS.md §12). A follow-up found that
+  keeping only what two drafts agree on is a poor filter: it removed 59% of
+  judged errors but also 21% of good sentences. Stage B (on the pod) is next.*
+- [ ] Stage B: judge Llama 3.3 70B at AWQ 4-bit on HP/Cradle, using the
+  windows in DECISIONS.md §12. Start with a 5-chapter trial
+  (`gpu_pod.py --model llama-3.3-70b`, then `tome ingest --max-chapters 5`),
+  because it is the tightest fit on the L40S. Judge Qwen3 14B (`--model
+  qwen3-14b`) the same way as the fallback.
+
+### Summary accuracy (before the Gate)
+
+Stage A found the summary errors are mostly wrong attribution and causation
+(who said or did something, which person, what caused what). They spread:
+each summary is read by the next chapter's prompt and by the rollups. Fix them
+where they start, and measure the fixes against hand-checked chapters rather
+than the judge alone, since the judge was right only about 5 times in 9.
+
+- [ ] **Gold set.** Hand-mark every factual error in about 10 public-domain
+  chapters (for example Oz book 2 ch 15–24, which hold the Jellia,
+  flying-machine and pill-wish slips). This measures how often the judge
+  is right and how many errors it misses. Every pipeline change below is
+  scored against it. Each confirmed error becomes a regression case in
+  `evals/public/`.
+- [ ] **Check each chapter summary against its own chapter, before it is
+  stored or fed forward.**
+  - Run it on the pod, with the per-sentence yes/no prompt the rollup check
+    uses (`tome/summarize.py`).
+  - Catching an error here keeps it out of every later prompt and rollup.
+  - Record flagged sentences in the run stats, as the rollup check does.
+- [ ] **Repair by deleting, never by rewriting sentences.**
+  - Drop a flagged sentence, or regenerate the whole summary once, check it
+    again, and keep the version with fewer flags.
+  - Stage A showed that rewriting flagged sentences added about as many
+    errors as it fixed, and a second check passed them.
+  - A missing detail costs coverage; a wrong one misleads the reader.
+  - Measure the coverage cost on the public evals.
+- [ ] **Check from a second model family.**
+  - Llama 3.3 70B fills the L40S, so it checks its own work while it
+    compiles.
+  - After compiling, swap in Qwen3 14B to re-check every summary and rollup.
+    This audit pass only adds flags to the review queue, since the pack is
+    already built.
+  - With the fallback model, Qwen3 14B and Gemma 3 12B (FP8, about 30 GB
+    together) fit on one L40S, so a second-family checker can run inline.
+  - On a 24 GB instance, run the audit pass after compiling, the same way.
+- [ ] **Review queue.** A `tome review` command lists, for a pack:
+  - flagged sentences, ranked by risk: identity statements, reveal chapters
+    and names first;
+  - sentences the two checkers disagree on.
+  Reading this replaces reading every summary. Also run it before Phase 2
+  results are trusted.
+
+Not worth building: writing each summary twice and keeping only what both
+drafts agree on (results, round 2 follow-up). Agreement can be at most a
+low-weight signal in the review queue.
 
 **Gate:** recaps are accurate and spoiler-free. Search returns the right
-passages for "where have I seen X?"
+passages for "where have I seen X?" *"Accurate" is measured on the gold set:
+the number of factual errors left in its chapters, after the checks and
+repairs above, with a threshold set after the first measurement.*
 
 ## Phase 2: The knowledge compiler (≈4–5 weeks). This is the core of the POC.
 
@@ -181,14 +238,26 @@ passages for "where have I seen X?"
 - [ ] Observations: natural-language sentence, structured fields, status
   (stated / claimed_by / inferred), and quote span. The **quote check** drops
   any observation whose quote doesn't verify.
+- [ ] **Quote-grounded summaries.**
+  - Each summary sentence carries a short supporting quote. The quote is
+    verified mechanically against the chapter text: no model, deterministic.
+  - The checker then compares one sentence with one quote, rather than with
+    the whole chapter.
+  - A sentence with no verified quote is dropped, the same quote-or-drop rule
+    as observations (invariant 5).
+  - Score it on the gold set against Phase 1's chapter check.
 - [ ] Relationships with a `pos`.
 - [ ] Entity profiles at checkpoints, built from the previous profile plus new
-  observations. Includes a support check.
+  observations. Includes a support check, which uses Phase 1's checker,
+  repair-by-deletion and review queue.
 - [ ] Anticipated Q&A per chapter, cited and limited to text up to that point.
 - [ ] Ingestion audit report: how many observations were dropped by the quote
-  check, how many profile sentences were flagged, and leak-eval results.
-- [ ] Model-size comparison on the same sample. Keep the smallest model that
-  passes.
+  check, how many profile sentences were flagged, and leak-eval results. It
+  also gives the error rate on the gold set, and it is the summary page of
+  `tome review`.
+- [ ] Model comparison on the same sample. Llama 3.3 70B is the default
+  (DECISIONS.md §12). Re-test Qwen3 14B, the fallback, on extraction, since
+  structured extraction may rank models differently from summaries.
 
 **Gate:** the database passes the spoiler eval with zero leaks, and the quote
 check passes for the vast majority of observations.
